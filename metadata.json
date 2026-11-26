@@ -1,0 +1,6 @@
+{
+  "name": "Batha League — Match Result",
+  "description": "Live match results poster for Batha League (بطولة الجهوية - دوري البطحة).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
