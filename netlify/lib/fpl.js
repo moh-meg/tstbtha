@@ -137,9 +137,10 @@ function normalizeCustomPlayerStem(raw) {
 }
 
 /**
- * Prioritizes direct Premier League 250x250 CDN URLs when a numeric code exists,
- * followed by static `/custom-players/` variants and the unified server photo pipeline
- * (`/.netlify/functions/player-photo`) as fallback.
+ * Prioritizes local `/custom-players/` variants (exact, case-insensitive, and
+ * accent-normalized web_name across .png, .jpg, .jpeg, .webp) FIRST before
+ * falling back to direct Premier League 250x250 CDN URLs and the unified
+ * server photo pipeline (`/.netlify/functions/player-photo`).
  *
  * @param {string | number | null | undefined} code
  * @param {string | null | undefined} [photo]
@@ -181,29 +182,35 @@ export function buildPlayerPhotoCandidates(code, photo, meta = null) {
     }
   };
 
+  // 1. Local /custom-players/ folder FIRST
+  const primaryName = (webName || fullName).replace(/[\\/]/g, '').trim();
+  if (primaryName) {
+    const stems = [];
+    const pushStem = (stem) => {
+      const cleaned = stem.trim();
+      if (cleaned && !stems.includes(cleaned)) {
+        stems.push(cleaned);
+      }
+    };
+    pushStem(primaryName);
+    pushStem(primaryName.toLowerCase());
+    const normalized = normalizeCustomPlayerStem(primaryName);
+    pushStem(normalized);
+    pushStem(normalized.toLowerCase());
+
+    for (const stem of stems) {
+      for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
+        pushUnique(`/custom-players/${encodeURIComponent(stem)}${ext}`);
+      }
+    }
+  }
+
+  // 2. Direct Premier League CDN fallback
   for (const id of orderedCdnIds) {
     pushUnique(`${FPL_PHOTO_BASE_250}/p${id}.png`);
   }
 
-  const safeWebName = webName.replace(/[\\/]/g, '').trim();
-  const safeFullName = fullName.replace(/[\\/]/g, '').trim();
-  if (safeWebName) {
-    for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
-      pushUnique(`/custom-players/${encodeURIComponent(safeWebName)}${ext}`);
-    }
-    const lowerWeb = safeWebName.toLowerCase();
-    if (lowerWeb !== safeWebName) {
-      pushUnique(`/custom-players/${encodeURIComponent(lowerWeb)}.png`);
-    }
-    const normalizedWeb = normalizeCustomPlayerStem(safeWebName);
-    if (normalizedWeb && normalizedWeb !== safeWebName && normalizedWeb !== lowerWeb) {
-      pushUnique(`/custom-players/${encodeURIComponent(normalizedWeb)}.png`);
-    }
-  }
-  if (safeFullName && safeFullName !== safeWebName) {
-    pushUnique(`/custom-players/${encodeURIComponent(safeFullName)}.png`);
-  }
-
+  // 3. Unified server fallback proxy
   if (orderedCdnIds.length > 0 || fullName || webName || firstName || secondName) {
     const proxyUrl = buildPlayerPhotoProxyUrl({
       code: orderedCdnIds[0] ?? null,

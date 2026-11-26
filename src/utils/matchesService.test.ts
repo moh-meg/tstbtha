@@ -210,7 +210,7 @@ test('isValidFplEntryId, buildFplPlayerPhotoCandidates, and assembleFplSquadClie
       teamName: 'Man City',
       teamCode: 43,
     }),
-    'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
+    '/custom-players/Haaland.png',
   );
   assert.deepEqual(
     buildFplPlayerPhotoCandidates(null, '654321.jpg', {
@@ -222,13 +222,15 @@ test('isValidFplEntryId, buildFplPlayerPhotoCandidates, and assembleFplSquadClie
       teamCode: 3,
     }),
     [
-      'https://resources.premierleague.com/premierleague/photos/players/250x250/p654321.png',
       '/custom-players/Signing.png',
       '/custom-players/Signing.jpg',
       '/custom-players/Signing.jpeg',
       '/custom-players/Signing.webp',
       '/custom-players/signing.png',
-      '/custom-players/New%20Signing.png',
+      '/custom-players/signing.jpg',
+      '/custom-players/signing.jpeg',
+      '/custom-players/signing.webp',
+      'https://resources.premierleague.com/premierleague/photos/players/250x250/p654321.png',
       '/.netlify/functions/player-photo?code=654321&name=New%20Signing&webName=Signing&firstName=New&secondName=Signing&team=Arsenal&teamCode=3',
     ],
   );
@@ -242,15 +244,30 @@ test('isValidFplEntryId, buildFplPlayerPhotoCandidates, and assembleFplSquadClie
       teamCode: 43,
     }),
     [
-      'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
       '/custom-players/Haaland.png',
       '/custom-players/Haaland.jpg',
       '/custom-players/Haaland.jpeg',
       '/custom-players/Haaland.webp',
       '/custom-players/haaland.png',
-      '/custom-players/Erling%20Haaland.png',
+      '/custom-players/haaland.jpg',
+      '/custom-players/haaland.jpeg',
+      '/custom-players/haaland.webp',
+      'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
       '/.netlify/functions/player-photo?code=223094&name=Erling%20Haaland&webName=Haaland&firstName=Erling&secondName=Haaland&team=Man%20City&teamCode=43',
     ],
+  );
+  // Diacritic/accent-normalized web_name generates exact, lowercase, normalized, normalized-lowercase across .png/.jpg/.jpeg/.webp
+  const dedicCandidates = buildFplPlayerPhotoCandidates(12345, null, {
+    webName: 'Dedić',
+    firstName: 'Amar',
+    secondName: 'Dedić',
+  });
+  assert.equal(dedicCandidates[0], '/custom-players/Dedi%C4%87.png');
+  assert.ok(dedicCandidates.includes('/custom-players/Dedic.png'));
+  assert.ok(dedicCandidates.includes('/custom-players/dedic.webp'));
+  assert.ok(
+    dedicCandidates.indexOf('/custom-players/dedic.webp') <
+      dedicCandidates.indexOf('https://resources.premierleague.com/premierleague/photos/players/250x250/p12345.png'),
   );
   assert.equal(
     resolveFplPlayerPhotoUrl(' p223094_cut.webp ', ''),
@@ -292,7 +309,7 @@ test('isValidFplEntryId, buildFplPlayerPhotoCandidates, and assembleFplSquadClie
   assert.equal(squad.startingXI.length, 1);
   assert.equal(squad.bench.length, 2);
   assert.equal(squad.startingXI[0].code, 223094);
-  assert.equal(squad.startingXI[0].photoUrl, 'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png');
+  assert.equal(squad.startingXI[0].photoUrl, '/custom-players/Raya.png');
   assert.equal(squad.startingXI[0].firstName, 'David');
   assert.equal(squad.startingXI[0].secondName, 'Raya');
   assert.equal(squad.startingXI[0].fullName, 'David Raya');
@@ -316,15 +333,20 @@ test('isValidFplEntryId, buildFplPlayerPhotoCandidates, and assembleFplSquadClie
     '/custom-players/NoCode.jpeg',
     '/custom-players/NoCode.webp',
     '/custom-players/nocode.png',
-    '/custom-players/Jamie%20Gittens.png',
+    '/custom-players/nocode.jpg',
+    '/custom-players/nocode.jpeg',
+    '/custom-players/nocode.webp',
     '/.netlify/functions/player-photo?name=Jamie%20Gittens&webName=NoCode&firstName=Jamie&secondName=Gittens&team=Arsenal&teamCode=3',
   ]);
 });
 
 test('resolvePlayerHeadshotCandidates, getNextHeadshotCandidateIndex, getPlayerFallbackInitials, and getClubKitColors work cleanly', () => {
   const candidates = resolvePlayerHeadshotCandidates({
-    photoUrls: ['/.netlify/functions/player-photo?code=223094', '/custom-players/Haaland.png'],
-    photoUrl: '/.netlify/functions/player-photo?code=223094',
+    photoUrls: [
+      'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
+      '/custom-players/Haaland.png',
+    ],
+    photoUrl: 'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
     code: 223094,
     fullName: 'Erling Haaland',
     webName: 'Haaland',
@@ -334,14 +356,14 @@ test('resolvePlayerHeadshotCandidates, getNextHeadshotCandidateIndex, getPlayerF
     teamCode: 43,
   });
 
-  assert.equal(
-    candidates[0],
-    'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
+  assert.equal(candidates[0], '/custom-players/Haaland.png');
+  assert.ok(
+    candidates.indexOf('/custom-players/haaland.webp') <
+      candidates.indexOf('https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png'),
   );
-  assert.equal(candidates[1], '/custom-players/Haaland.png');
   assert.equal(
     candidates[candidates.length - 1],
-    '/.netlify/functions/player-photo?code=223094',
+    '/.netlify/functions/player-photo?code=223094&name=Erling%20Haaland&webName=Haaland&firstName=Erling&secondName=Haaland&team=Man%20City&teamCode=43',
   );
 
   let idx = 0;

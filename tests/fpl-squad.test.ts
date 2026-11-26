@@ -27,7 +27,7 @@ test('validateEntryId accepts numeric manager IDs and rejects invalid inputs', (
   assert.equal(validateEventId('39'), null);
 });
 
-test('buildPlayerPhotoCandidates and resolvePlayerPhotoUrl prioritize direct Premier League CDN first, then custom-players and proxy fallback', () => {
+test('buildPlayerPhotoCandidates and resolvePlayerPhotoUrl prioritize local /custom-players/ first, then Premier League CDN and proxy fallback', () => {
   assert.equal(
     resolvePlayerPhotoUrl(223094, '223094.jpg', {
       fullName: 'Erling Haaland',
@@ -37,7 +37,7 @@ test('buildPlayerPhotoCandidates and resolvePlayerPhotoUrl prioritize direct Pre
       teamName: 'Man City',
       teamCode: 43,
     }),
-    'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
+    '/custom-players/Haaland.png',
   );
   assert.deepEqual(
     buildPlayerPhotoCandidates(223094, '654321.jpg', {
@@ -49,14 +49,16 @@ test('buildPlayerPhotoCandidates and resolvePlayerPhotoUrl prioritize direct Pre
       teamCode: 43,
     }),
     [
-      'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
-      'https://resources.premierleague.com/premierleague/photos/players/250x250/p654321.png',
       '/custom-players/Haaland.png',
       '/custom-players/Haaland.jpg',
       '/custom-players/Haaland.jpeg',
       '/custom-players/Haaland.webp',
       '/custom-players/haaland.png',
-      '/custom-players/Erling%20Haaland.png',
+      '/custom-players/haaland.jpg',
+      '/custom-players/haaland.jpeg',
+      '/custom-players/haaland.webp',
+      'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
+      'https://resources.premierleague.com/premierleague/photos/players/250x250/p654321.png',
       '/.netlify/functions/player-photo?code=223094&photoCode=654321&name=Erling%20Haaland&webName=Haaland&firstName=Erling&secondName=Haaland&team=Man%20City&teamCode=43',
     ],
   );
@@ -79,7 +81,9 @@ test('buildPlayerPhotoCandidates and resolvePlayerPhotoUrl prioritize direct Pre
       '/custom-players/Signing.jpeg',
       '/custom-players/Signing.webp',
       '/custom-players/signing.png',
-      '/custom-players/New%20Signing.png',
+      '/custom-players/signing.jpg',
+      '/custom-players/signing.jpeg',
+      '/custom-players/signing.webp',
       '/.netlify/functions/player-photo?name=New%20Signing&webName=Signing&firstName=New&secondName=Signing&team=Arsenal&teamCode=3',
     ],
   );
@@ -159,16 +163,18 @@ test('assembleFplSquad maps picks + bootstrap-static + live GW11 points and forw
   assert.equal(squad.startingXI[1].points, 36);
   assert.equal(
     squad.startingXI[1].photoUrl,
-    'https://resources.premierleague.com/premierleague/photos/players/250x250/p118748.png',
+    '/custom-players/M.Salah.png',
   );
   assert.deepEqual(squad.startingXI[1].photoUrls, [
-    'https://resources.premierleague.com/premierleague/photos/players/250x250/p118748.png',
     '/custom-players/M.Salah.png',
     '/custom-players/M.Salah.jpg',
     '/custom-players/M.Salah.jpeg',
     '/custom-players/M.Salah.webp',
     '/custom-players/m.salah.png',
-    '/custom-players/Mohamed%20Salah.png',
+    '/custom-players/m.salah.jpg',
+    '/custom-players/m.salah.jpeg',
+    '/custom-players/m.salah.webp',
+    'https://resources.premierleague.com/premierleague/photos/players/250x250/p118748.png',
     '/.netlify/functions/player-photo?code=118748&name=Mohamed%20Salah&webName=M.Salah&firstName=Mohamed&secondName=Salah&team=Liverpool&teamCode=14',
   ]);
   assert.equal(squad.startingXI[2].isViceCaptain, true);
@@ -189,7 +195,9 @@ test('assembleFplSquad maps picks + bootstrap-static + live GW11 points and forw
     '/custom-players/Mystery.jpeg',
     '/custom-players/Mystery.webp',
     '/custom-players/mystery.png',
-    '/custom-players/James%20Garner.png',
+    '/custom-players/mystery.jpg',
+    '/custom-players/mystery.jpeg',
+    '/custom-players/mystery.webp',
     '/.netlify/functions/player-photo?name=James%20Garner&webName=Mystery&firstName=James&secondName=Garner&team=Arsenal&teamCode=3',
   ]);
 });

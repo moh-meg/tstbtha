@@ -770,29 +770,33 @@ export function buildCustomPlayerPhotoCandidates(meta?: PlayerPhotoCandidateMeta
     [firstName, secondName].filter(Boolean).join(' ')
   ).trim();
 
-  const candidates: string[] = [];
-  const pushUnique = (path: string) => {
-    if (path && !candidates.includes(path)) {
-      candidates.push(path);
+  const primaryName = webName || fullName;
+  if (!primaryName) {
+    return [];
+  }
+
+  const stems: string[] = [];
+  const pushStem = (stem: string) => {
+    const cleaned = stem.trim();
+    if (cleaned && !stems.includes(cleaned)) {
+      stems.push(cleaned);
     }
   };
 
-  if (webName) {
-    for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
-      pushUnique(`/custom-players/${encodeURIComponent(webName)}${ext}`);
-    }
-    const lowerWeb = webName.toLowerCase();
-    if (lowerWeb !== webName) {
-      pushUnique(`/custom-players/${encodeURIComponent(lowerWeb)}.png`);
-    }
-    const normalizedWeb = normalizeCustomPlayerFileStem(webName);
-    if (normalizedWeb && normalizedWeb !== webName && normalizedWeb !== lowerWeb) {
-      pushUnique(`/custom-players/${encodeURIComponent(normalizedWeb)}.png`);
-    }
-  }
+  pushStem(primaryName);
+  pushStem(primaryName.toLowerCase());
+  const normalized = normalizeCustomPlayerFileStem(primaryName);
+  pushStem(normalized);
+  pushStem(normalized.toLowerCase());
 
-  if (fullName && fullName !== webName) {
-    pushUnique(`/custom-players/${encodeURIComponent(fullName)}.png`);
+  const candidates: string[] = [];
+  for (const stem of stems) {
+    for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
+      const path = `/custom-players/${encodeURIComponent(stem)}${ext}`;
+      if (!candidates.includes(path)) {
+        candidates.push(path);
+      }
+    }
   }
 
   return candidates;
@@ -830,12 +834,7 @@ export function buildFplPlayerPhotoCandidates(
     }
   };
 
-  // 1. Direct Premier League CDN first for any player with a numeric code
-  for (const id of orderedCdnIds) {
-    pushUnique(`${FPL_PHOTO_BASE_250}/p${id}.png`);
-  }
-
-  // 2. Local custom-players folder variants
+  // 1. Local custom-players folder FIRST (exact, case-insensitive, accent-normalized across .png/.jpg/.jpeg/.webp)
   for (const customUrl of buildCustomPlayerPhotoCandidates({
     fullName,
     webName,
@@ -845,7 +844,12 @@ export function buildFplPlayerPhotoCandidates(
     pushUnique(customUrl);
   }
 
-  // 3. Unified server fallback proxy (custom case-insensitive, PL25/110x140, club, TheSportsDB, Wikipedia)
+  // 2. Direct Premier League CDN fallback after local custom-players fails
+  for (const id of orderedCdnIds) {
+    pushUnique(`${FPL_PHOTO_BASE_250}/p${id}.png`);
+  }
+
+  // 3. Unified server fallback proxy (PL25/110x140, official club, TheSportsDB, Wikipedia)
   if (orderedCdnIds.length > 0 || fullName || webName || firstName || secondName) {
     const proxyUrl = buildPlayerPhotoProxyUrl({
       code: orderedCdnIds[0] ?? null,
@@ -887,8 +891,8 @@ export interface HeadshotCandidateInput {
 }
 
 export function resolvePlayerHeadshotCandidates(input: HeadshotCandidateInput): string[] {
-  const directPlUrls: string[] = [];
   const customUrls: string[] = [];
+  const directPlUrls: string[] = [];
   const otherUrls: string[] = [];
   const proxyUrls: string[] = [];
 
@@ -906,15 +910,15 @@ export function resolvePlayerHeadshotCandidates(input: HeadshotCandidateInput): 
       }
       return;
     }
-    if (/^https:\/\/resources\.premierleague\.com\/premierleague(?:25)?\/photos\/players\//i.test(trimmed)) {
-      if (!directPlUrls.includes(trimmed)) {
-        directPlUrls.push(trimmed);
-      }
-      return;
-    }
     if (trimmed.startsWith('/custom-players/')) {
       if (!customUrls.includes(trimmed)) {
         customUrls.push(trimmed);
+      }
+      return;
+    }
+    if (/^https:\/\/resources\.premierleague\.com\/premierleague(?:25)?\/photos\/players\//i.test(trimmed)) {
+      if (!directPlUrls.includes(trimmed)) {
+        directPlUrls.push(trimmed);
       }
       return;
     }
@@ -923,7 +927,13 @@ export function resolvePlayerHeadshotCandidates(input: HeadshotCandidateInput): 
     }
   };
 
-  // Ensure direct Premier League URL for numeric code is always primary (index 0)
+  if (Array.isArray(input.photoUrls)) {
+    for (const url of input.photoUrls) {
+      classifyAndPush(url);
+    }
+  }
+  classifyAndPush(input.photoUrl);
+
   const builtCandidates = buildFplPlayerPhotoCandidates(input.code, null, {
     fullName: input.fullName,
     webName: input.webName,
@@ -933,23 +943,10 @@ export function resolvePlayerHeadshotCandidates(input: HeadshotCandidateInput): 
     teamCode: input.teamCode,
   });
   for (const candidate of builtCandidates) {
-    if (/^https:\/\/resources\.premierleague\.com\/premierleague\/photos\/players\/250x250\/p\d+\.png$/i.test(candidate)) {
-      classifyAndPush(candidate);
-    }
-  }
-
-  if (Array.isArray(input.photoUrls)) {
-    for (const url of input.photoUrls) {
-      classifyAndPush(url);
-    }
-  }
-  classifyAndPush(input.photoUrl);
-
-  for (const candidate of builtCandidates) {
     classifyAndPush(candidate);
   }
 
-  return [...directPlUrls, ...customUrls, ...otherUrls, ...proxyUrls];
+  return [...customUrls, ...directPlUrls, ...otherUrls, ...proxyUrls];
 }
 
 export interface ClubKitColors {
