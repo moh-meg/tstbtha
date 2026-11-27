@@ -151,7 +151,11 @@ export default function App() {
           <ArabicFooter />
         </div>
 
-        <FplSquadModal player={selectedPlayer} onClose={handleCloseSquadModal} />
+        <FplSquadModal
+          player={selectedPlayer}
+          players={players}
+          onClose={handleCloseSquadModal}
+        />
       </div>
     </MotionConfig>
   );

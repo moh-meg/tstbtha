@@ -9,11 +9,13 @@ import {
   getNextHeadshotCandidateIndex,
   getPlayerFallbackInitials,
   isArabicText,
+  resolveExcelManagerPoints,
   resolvePlayerHeadshotCandidates,
 } from '../utils/matchesService';
 
 interface FplSquadModalProps {
   player: PlayerItem | null;
+  players?: readonly PlayerItem[];
   onClose: () => void;
 }
 
@@ -251,22 +253,35 @@ function PitchPlayerTile({
   );
 }
 
-export function FplSquadModal({ player, onClose }: FplSquadModalProps) {
+export function FplSquadModal({ player, players = [], onClose }: FplSquadModalProps) {
   const [squad, setSquad] = useState<FplSquadData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [previewNotice, setPreviewNotice] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
 
-  const loadSquad = useCallback(async (entryId: string) => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    setPreviewNotice(null);
-    setSquad(null);
+  const loadSquad = useCallback(
+    async (targetPlayer: PlayerItem) => {
+      setIsLoading(true);
+      setErrorMessage(null);
+      setPreviewNotice(null);
+      setSquad(null);
 
-    const result = await fetchFplSquadData(entryId, DEFAULT_FPL_EVENT);
-    return result;
-  }, []);
+      const result = await fetchFplSquadData(
+        targetPlayer.playerId,
+        DEFAULT_FPL_EVENT,
+        undefined,
+        undefined,
+        true,
+        {
+          selectedPlayer: targetPlayer,
+          players,
+        },
+      );
+      return result;
+    },
+    [players],
+  );
 
   useEffect(() => {
     if (!player) {
@@ -279,7 +294,7 @@ export function FplSquadModal({ player, onClose }: FplSquadModalProps) {
 
     let active = true;
 
-    void loadSquad(player.playerId).then((result) => {
+    void loadSquad(player).then((result) => {
       if (!active) {
         return;
       }
@@ -292,7 +307,7 @@ export function FplSquadModal({ player, onClose }: FplSquadModalProps) {
         setPreviewNotice(null);
         setErrorMessage(
           result.errorMessage ??
-            'لا توجد تشكيلة متاحة لهذا اللاعب في الجولة 11.',
+            `لا توجد تشكيلة متاحة لهذا اللاعب في الجولة ${DEFAULT_FPL_EVENT}.`,
         );
       }
       setIsLoading(false);
@@ -374,15 +389,16 @@ export function FplSquadModal({ player, onClose }: FplSquadModalProps) {
                 >
                   <span>ID : {player.playerId}</span>
                   <span aria-hidden="true">·</span>
-                  <span>GW 11</span>
-                  {squad?.eventPoints !== null && squad?.eventPoints !== undefined && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-bold text-[#FFD60A]">
-                        {squad.eventPoints} pts
-                      </span>
-                    </>
-                  )}
+                  <span>GW {squad?.event ?? DEFAULT_FPL_EVENT}</span>
+                  <span aria-hidden="true">·</span>
+                  <span data-testid="fpl-header-points" className="font-bold text-[#FFD60A]">
+                    {resolveExcelManagerPoints({
+                      entryId: player.playerId,
+                      selectedPlayer: player,
+                      players,
+                    })}{' '}
+                    pts
+                  </span>
                 </p>
               </div>
             </div>
@@ -399,7 +415,7 @@ export function FplSquadModal({ player, onClose }: FplSquadModalProps) {
                     aria-hidden="true"
                   />
                   <p dir="rtl" className="text-sm font-bold text-[#0F172A]">
-                    جاري تحميل تشكيلة FPL للجولة 11...
+                    جاري تحميل تشكيلة FPL للجولة {DEFAULT_FPL_EVENT}...
                   </p>
                 </div>
               ) : errorMessage ? (

@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as XLSX from 'xlsx';
 import {
+  DEFAULT_FPL_EVENT,
   DEFAULT_MATCHES,
+  applyExcelPointsToSquad,
   assembleFplSquadClient,
   buildFplBootstrapLookupClient,
   buildFplLivePointsMapClient,
@@ -24,6 +26,7 @@ import {
   parsePlayersWorkbookRows,
   parseWorkbookRows,
   resetFplClientCachesForTests,
+  resolveExcelManagerPoints,
   resolveFplPlayerPhotoUrl,
   resolvePlayerHeadshotCandidates,
   resolveTeamLogoUrl,
@@ -290,9 +293,10 @@ test('isValidFplEntryId, buildFplPlayerPhotoCandidates, and assembleFplSquadClie
     ],
   });
 
+  // Header points strictly from Excel (32), while player card points come from FPL livePointsMap (7 * 2 = 14)
   const squad = assembleFplSquadClient(
     '2249544',
-    11,
+    DEFAULT_FPL_EVENT,
     {
       entry_history: { points: 55, total_points: 600 },
       picks: [
@@ -303,9 +307,13 @@ test('isValidFplEntryId, buildFplPlayerPhotoCandidates, and assembleFplSquadClie
     },
     lookup,
     liveMap,
+    32,
   );
 
   assert.ok(squad);
+  assert.equal(DEFAULT_FPL_EVENT, 12);
+  assert.equal(squad.event, 12);
+  assert.equal(squad.eventPoints, 32);
   assert.equal(squad.startingXI.length, 1);
   assert.equal(squad.bench.length, 2);
   assert.equal(squad.startingXI[0].code, 223094);
@@ -323,6 +331,7 @@ test('isValidFplEntryId, buildFplPlayerPhotoCandidates, and assembleFplSquadClie
   assert.equal(squad.bench[1].code, null);
   assert.equal(squad.bench[1].first_name, 'Jamie');
   assert.equal(squad.bench[1].second_name, 'Gittens');
+  assert.equal(squad.bench[1].points, 0);
   assert.equal(
     squad.bench[1].photoUrl,
     '/custom-players/NoCode.png',
@@ -417,16 +426,38 @@ test('resolvePlayerHeadshotCandidates, getNextHeadshotCandidateIndex, getPlayerF
   assert.equal(getClubKitColors('', '', 3).primary, '#EF0107');
 });
 
-test('fetchFplSquadData falls back to direct FPL API including /event/11/live/ and handles invalid IDs', async () => {
+test('resolveExcelManagerPoints and applyExcelPointsToSquad strictly use Excel data and default missing values to 0', () => {
+  const players = [
+    { id: 'p1', teamName: 'اولاد زبانة', playerName: 'DR27 (cap)', playerId: '2249544', playerScore: 0 },
+    { id: 'p2', teamName: 'بني مزاب', playerName: 'walid sabeur (cap)', playerId: '233289', playerScore: 44 },
+    { id: 'p3', teamName: 'اولاد الدليل', playerName: 'Hassan Team', playerId: '60990', playerScore: null },
+  ];
+
+  assert.equal(resolveExcelManagerPoints({ entryId: '2249544', players }), 0);
+  assert.equal(resolveExcelManagerPoints({ entryId: '233289', players }), 44);
+  assert.equal(resolveExcelManagerPoints({ entryId: '60990', players }), 0);
+  assert.equal(resolveExcelManagerPoints({ entryId: '999999', players }), 0);
+  assert.equal(
+    resolveExcelManagerPoints({
+      entryId: 'unknown',
+      selectedPlayer: { id: 'p2', teamName: 'بني مزاب', playerName: 'walid sabeur (cap)', playerId: '233289', playerScore: 44 },
+      players,
+    }),
+    44,
+  );
+});
+
+test('fetchFplSquadData calls /event/12/picks/ and /event/12/live/ for player cards while header points stay strictly from Excel', async () => {
   resetFplClientCachesForTests();
 
   const invalid = await fetchFplSquadData('-');
   assert.equal(invalid.source, 'error');
   assert.equal(invalid.errorCode, 'INVALID_ENTRY_ID');
 
+  let calledLiveEndpoint = false;
   const directResult = await fetchFplSquadData(
     '2249544',
-    11,
+    DEFAULT_FPL_EVENT,
     ['/api/fpl-squad'],
     async (url) => {
       if (url.startsWith('/api/fpl-squad')) {
@@ -437,7 +468,7 @@ test('fetchFplSquadData falls back to direct FPL API including /event/11/live/ a
           text: async () => '<html>404</html>',
         };
       }
-      if (url.includes('/entry/2249544/event/11/picks/')) {
+      if (url.includes('/entry/2249544/event/12/picks/')) {
         return {
           ok: true,
           status: 200,
@@ -467,7 +498,8 @@ test('fetchFplSquadData falls back to direct FPL API including /event/11/live/ a
             }),
         };
       }
-      if (url.includes('/event/11/live/')) {
+      if (url.includes('/event/12/live/')) {
+        calledLiveEndpoint = true;
         return {
           ok: true,
           status: 200,
@@ -483,10 +515,25 @@ test('fetchFplSquadData falls back to direct FPL API including /event/11/live/ a
       }
       return { ok: false, status: 404 };
     },
+    true,
+    {
+      selectedPlayer: {
+        id: 'player-dr27',
+        teamName: 'اولاد زبانة',
+        playerName: 'DR27 (cap)',
+        playerId: '2249544',
+        playerScore: 0,
+      },
+    },
   );
 
+  assert.equal(calledLiveEndpoint, true);
   assert.equal(directResult.source, 'direct');
   assert.ok(directResult.squad);
+  assert.equal(directResult.squad.event, 12);
+  // Header points strictly reflect Excel (0), NOT FPL entry_history.points (49)
+  assert.equal(directResult.squad.eventPoints, 0);
+  // Individual player cards use FPL event/12/live/ points
   assert.equal(directResult.squad.startingXI.length, 2);
   assert.equal(directResult.squad.startingXI[0].points, 6);
   assert.equal(directResult.squad.startingXI[1].webName, 'Saka');
@@ -494,22 +541,33 @@ test('fetchFplSquadData falls back to direct FPL API including /event/11/live/ a
   assert.equal(directResult.squad.startingXI[1].points, 18);
 });
 
-test('fetchFplSquadData falls back to entry 122 preview squad with GW11 points when network/CORS blocks FPL', async () => {
+test('fetchFplSquadData falls back to entry 122 preview squad for GW12 with Excel header points and FPL live player points', async () => {
   resetFplClientCachesForTests();
 
   const previewResult = await fetchFplSquadData(
-    '122',
-    11,
+    '2249544',
+    DEFAULT_FPL_EVENT,
     ['/.netlify/functions/fpl-squad'],
     async () => {
       throw new TypeError('Failed to fetch');
     },
     true,
+    {
+      selectedPlayer: {
+        id: 'player-dr27',
+        teamName: 'اولاد زبانة',
+        playerName: 'DR27 (cap)',
+        playerId: '2249544',
+        playerScore: 27,
+      },
+    },
   );
 
   assert.equal(previewResult.source, 'preview-fallback');
-  assert.ok(previewResult.previewNotice);
+  assert.ok(previewResult.previewNotice?.includes('الجولة 12'));
   assert.ok(previewResult.squad);
+  assert.equal(previewResult.squad.event, 12);
+  assert.equal(previewResult.squad.eventPoints, 27);
   assert.equal(previewResult.squad.startingXI.length, 11);
   assert.equal(previewResult.squad.bench.length, 4);
   const captain = previewResult.squad.startingXI.find((p) => p.elementId === 411);
@@ -525,6 +583,9 @@ test('fetchFplSquadData falls back to entry 122 preview squad with GW11 points w
     [497, 31, 346, 304],
   );
   assert.equal(previewResult.squad.pointsOnBench, 9);
+  const withMissingExcel = applyExcelPointsToSquad(previewResult.squad, { players: [] });
+  assert.equal(withMissingExcel.eventPoints, 0);
+  assert.equal(withMissingExcel.startingXI.find((p) => p.elementId === 411)?.points, 12);
 });
 
 

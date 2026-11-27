@@ -12,7 +12,7 @@ import {
   validateEntryId,
   validateEventId,
 } from '../netlify/lib/fpl.js';
-import { handler } from '../netlify/functions/fpl-squad.js';
+import { handler, resolveExcelPointsForEntry } from '../netlify/functions/fpl-squad.js';
 
 test('validateEntryId accepts numeric manager IDs and rejects invalid inputs', () => {
   assert.equal(validateEntryId('2249544'), '2249544');
@@ -22,8 +22,8 @@ test('validateEntryId accepts numeric manager IDs and rejects invalid inputs', (
   assert.equal(validateEntryId('123abc'), null);
   assert.equal(validateEntryId('../admin'), null);
   assert.equal(validateEntryId('https://evil.test'), null);
-  assert.equal(validateEventId(undefined), 11);
-  assert.equal(validateEventId('11'), 11);
+  assert.equal(validateEventId(undefined), 12);
+  assert.equal(validateEventId('12'), 12);
   assert.equal(validateEventId('39'), null);
 });
 
@@ -94,7 +94,7 @@ test('buildPlayerPhotoCandidates and resolvePlayerPhotoUrl prioritize local /cus
   assert.equal(resolvePlayerPhotoUrl(null, ''), '');
 });
 
-test('assembleFplSquad maps picks + bootstrap-static + live GW11 points and forwards web_name, first_name, second_name, code, and club metadata', () => {
+test('assembleFplSquad maps picks + bootstrap-static + live GW12 player points while keeping eventPoints from Excel', () => {
   const bootstrapMaps = buildBootstrapMaps({
     teams: [
       { id: 1, code: 3, short_name: 'ARS', name: 'Arsenal' },
@@ -120,9 +120,10 @@ test('assembleFplSquad maps picks + bootstrap-static + live GW11 points and forw
 
   const squad = assembleFplSquad({
     entryId: '2249544',
-    event: 11,
+    event: 12,
     bootstrapMaps,
     livePointsMap,
+    excelEventPoints: 41,
     picksPayload: {
       active_chip: '3xc',
       entry_history: { points: 78, total_points: 710, points_on_bench: 11, rank: 52400 },
@@ -137,9 +138,10 @@ test('assembleFplSquad maps picks + bootstrap-static + live GW11 points and forw
   });
 
   assert.equal(squad.entryId, '2249544');
-  assert.equal(squad.event, 11);
+  assert.equal(squad.event, 12);
   assert.equal(squad.activeChip, '3xc');
-  assert.equal(squad.eventPoints, 78);
+  // Header points strictly from Excel (41), not FPL entry_history.points (78)
+  assert.equal(squad.eventPoints, 41);
   assert.equal(squad.pointsOnBench, 11);
   assert.equal(squad.rank, 52400);
   assert.equal(squad.startingXI.length, 3);
@@ -202,20 +204,32 @@ test('assembleFplSquad maps picks + bootstrap-static + live GW11 points and forw
   ]);
 });
 
+test('resolveExcelPointsForEntry returns exact Excel playerScore or defaults to 0', () => {
+  const players = [
+    { playerId: '2249544', playerScore: 0 },
+    { playerId: '233289', playerScore: 37 },
+    { playerId: '60990', playerScore: null },
+  ];
+  assert.equal(resolveExcelPointsForEntry('2249544', players), 0);
+  assert.equal(resolveExcelPointsForEntry('233289', players), 37);
+  assert.equal(resolveExcelPointsForEntry('60990', players), 0);
+  assert.equal(resolveExcelPointsForEntry('999999', players), 0);
+});
+
 test('getFplSquadWithCache caches per entryId for 90s and coalesces concurrent calls', async () => {
   resetFplCachesForTests();
   let calls = 0;
 
-  const loader = async (entryId: string, event: number = 11) => {
+  const loader = async (entryId: string, event: number = 12) => {
     calls += 1;
     await new Promise((r) => setTimeout(r, 10));
     return {
       entryId,
       event,
       activeChip: null,
-      eventPoints: 49,
+      eventPoints: 0,
       totalPoints: 620,
-      pointsOnBench: 6,
+      pointsOnBench: null,
       rank: 210000,
       startingXI: [],
       bench: [],
@@ -225,15 +239,15 @@ test('getFplSquadWithCache caches per entryId for 90s and coalesces concurrent c
 
   const now = 5_000_000;
   const [r1, r2] = await Promise.all([
-    getFplSquadWithCache('2249544', 11, now, loader),
-    getFplSquadWithCache('2249544', 11, now + 5, loader),
+    getFplSquadWithCache('2249544', 12, now, loader),
+    getFplSquadWithCache('2249544', 12, now + 5, loader),
   ]);
 
   assert.equal(calls, 1);
   assert.equal(r1.cacheState, 'MISS');
   assert.equal(r2.cacheState, 'MISS');
 
-  const r3 = await getFplSquadWithCache('2249544', 11, Date.now() + 20_000, loader);
+  const r3 = await getFplSquadWithCache('2249544', 12, Date.now() + 20_000, loader);
   assert.equal(calls, 1);
   assert.equal(r3.cacheState, 'HIT');
 });

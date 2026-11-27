@@ -1,6 +1,6 @@
 import { createTimedCache } from './oneDrive.js';
 
-export const DEFAULT_FPL_EVENT = 11;
+export const DEFAULT_FPL_EVENT = 12;
 export const FPL_SQUAD_CACHE_TTL_MS = 90_000;
 export const FPL_BOOTSTRAP_CACHE_TTL_MS = 10 * 60 * 1000;
 export const FPL_SQUAD_CACHE_CONTROL =
@@ -362,12 +362,23 @@ export function buildLivePointsMap(livePayload) {
   return pointsById;
 }
 
+/**
+ * @param {{
+ *   entryId: string | number,
+ *   event?: number,
+ *   picksPayload: any,
+ *   bootstrapMaps: any,
+ *   livePointsMap?: Map<number, number> | null,
+ *   excelEventPoints?: number | null,
+ * }} params
+ */
 export function assembleFplSquad({
   entryId,
   event = DEFAULT_FPL_EVENT,
   picksPayload,
   bootstrapMaps,
-  livePointsMap = /** @type {Map<number, number> | null} */ (null),
+  livePointsMap = null,
+  excelEventPoints = null,
 }) {
   const rawPicks = Array.isArray(picksPayload?.picks) ? picksPayload.picks : [];
   const mappedPlayers = rawPicks
@@ -388,7 +399,7 @@ export function assembleFplSquad({
 
       const rawPoints =
         livePointsMap instanceof Map && livePointsMap.has(elementId)
-          ? livePointsMap.get(elementId)
+          ? livePointsMap.get(elementId) ?? 0
           : 0;
       const isStarter = Number.isFinite(position) && position >= 1 && position <= 11;
       const points = isStarter ? rawPoints * multiplier : rawPoints;
@@ -441,14 +452,16 @@ export function assembleFplSquad({
       ? picksPayload.entry_history
       : null;
 
+  const resolvedEventPoints =
+    typeof excelEventPoints === 'number' && Number.isFinite(excelEventPoints)
+      ? excelEventPoints
+      : 0;
+
   return {
     entryId: String(entryId),
     event,
     activeChip: typeof picksPayload?.active_chip === 'string' ? picksPayload.active_chip : null,
-    eventPoints:
-      entryHistory && typeof entryHistory.points === 'number' && Number.isFinite(entryHistory.points)
-        ? entryHistory.points
-        : null,
+    eventPoints: resolvedEventPoints,
     totalPoints:
       entryHistory &&
       typeof entryHistory.total_points === 'number' &&
@@ -576,7 +589,7 @@ export async function fetchFplSquadFromApi(entryId, event = DEFAULT_FPL_EVENT, f
     throw new FplUpstreamError(
       404,
       'NOT_FOUND',
-      'No Gameweek 11 picks found for this FPL manager ID (invalid ID or private team).',
+      `No Gameweek ${validEvent} picks found for this FPL manager ID (invalid ID or private team).`,
     );
   }
 
@@ -601,7 +614,7 @@ export async function fetchFplSquadFromApi(entryId, event = DEFAULT_FPL_EVENT, f
     throw new FplUpstreamError(
       404,
       'NO_PICKS',
-      'No Gameweek 11 picks recorded for this manager.',
+      `No Gameweek ${validEvent} picks recorded for this manager.`,
     );
   }
 

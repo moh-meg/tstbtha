@@ -91,7 +91,7 @@ function TeamPlayersColumn({
                   type="button"
                   dir="ltr"
                   onClick={() => onSelectPlayer(player)}
-                  aria-label={`${player.playerName} (ID ${player.playerId}) — View GW11 FPL squad`}
+                  aria-label={`${player.playerName} (ID ${player.playerId}) — View GW12 FPL squad`}
                   className={`flex min-h-[52px] w-full cursor-pointer items-center justify-between gap-3 px-4 py-2.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#0038C7] ${
                     isSelected
                       ? 'bg-[#DCE7FF] hover:bg-[#D0DFFF]'

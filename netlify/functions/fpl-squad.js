@@ -6,6 +6,21 @@ import {
   validateEntryId,
   validateEventId,
 } from '../lib/fpl.js';
+import { getPlayersWithCache } from './players.js';
+
+export function resolveExcelPointsForEntry(entryId, players = []) {
+  const targetId = String(entryId ?? '').trim();
+  if (!targetId || !Array.isArray(players)) {
+    return 0;
+  }
+  const matched = players.find(
+    (item) => item && String(item.playerId ?? '').trim() === targetId,
+  );
+  if (matched && typeof matched.playerScore === 'number' && Number.isFinite(matched.playerScore)) {
+    return matched.playerScore;
+  }
+  return 0;
+}
 
 export async function handler(event) {
   const query = event?.queryStringParameters || {};
@@ -41,7 +56,18 @@ export async function handler(event) {
   }
 
   try {
-    const { payload, cacheState } = await getFplSquadWithCache(entryId, eventId);
+    const [{ payload, cacheState }, playersResult] = await Promise.all([
+      getFplSquadWithCache(entryId, eventId),
+      getPlayersWithCache().catch(() => null),
+    ]);
+    const excelPlayers = playersResult?.payload?.players ?? [];
+    const excelEventPoints = resolveExcelPointsForEntry(entryId, excelPlayers);
+    const responsePayload = {
+      ...payload,
+      event: eventId,
+      eventPoints: excelEventPoints,
+    };
+
     return {
       statusCode: 200,
       headers: {
@@ -49,7 +75,7 @@ export async function handler(event) {
         'Cache-Control': FPL_SQUAD_CACHE_CONTROL,
         'X-FPL-Squad-Cache': cacheState,
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(responsePayload),
     };
   } catch (error) {
     const statusCode = error instanceof FplUpstreamError ? error.statusCode : 502;

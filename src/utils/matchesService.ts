@@ -27,7 +27,7 @@ export const DEFAULT_FPL_SQUAD_ENDPOINTS = [
   '/api/fpl-squad',
 ] as const;
 
-export const DEFAULT_FPL_EVENT = 11;
+export const DEFAULT_FPL_EVENT = 12;
 
 export const DEFAULT_ONEDRIVE_DOWNLOAD_URLS = [
   'https://onedrive.live.com/personal/13310541d7ff2949/_layouts/15/download.aspx?share=IQCa819eDxX5RJBkUo6rcRrNAbXaYV5W9B98WTnFZfSSsew',
@@ -1239,12 +1239,84 @@ export function buildFplLivePointsMapClient(rawLive: unknown): Map<number, numbe
   return pointsById;
 }
 
+export interface ExcelPointsContext {
+  selectedPlayer?: PlayerItem | null;
+  players?: readonly PlayerItem[];
+  playerPointsById?: ReadonlyMap<number, number> | null;
+}
+
+export function resolveExcelManagerPoints(input: {
+  entryId?: string | number | null;
+  selectedPlayer?: PlayerItem | null;
+  players?: readonly PlayerItem[];
+}): number {
+  const targetId =
+    input.entryId !== null && input.entryId !== undefined
+      ? String(input.entryId).trim()
+      : input.selectedPlayer?.playerId?.trim() ?? '';
+
+  const list = Array.isArray(input.players) ? input.players : [];
+
+  if (targetId && list.length > 0) {
+    const byId = list.find((item) => item.playerId.trim() === targetId);
+    if (byId) {
+      return typeof byId.playerScore === 'number' && Number.isFinite(byId.playerScore)
+        ? byId.playerScore
+        : 0;
+    }
+  }
+
+  const selectedName = input.selectedPlayer?.playerName?.trim().toLowerCase() ?? '';
+  const selectedTeam = input.selectedPlayer?.teamName?.trim().toLowerCase() ?? '';
+  if (selectedName && list.length > 0) {
+    const byName = list.find((item) => {
+      const nameMatches = item.playerName.trim().toLowerCase() === selectedName;
+      if (!nameMatches) {
+        return false;
+      }
+      return selectedTeam ? item.teamName.trim().toLowerCase() === selectedTeam : true;
+    });
+    if (byName) {
+      return typeof byName.playerScore === 'number' && Number.isFinite(byName.playerScore)
+        ? byName.playerScore
+        : 0;
+    }
+  }
+
+  if (
+    input.selectedPlayer &&
+    typeof input.selectedPlayer.playerScore === 'number' &&
+    Number.isFinite(input.selectedPlayer.playerScore)
+  ) {
+    return input.selectedPlayer.playerScore;
+  }
+
+  return 0;
+}
+
+export function applyExcelPointsToSquad(
+  squad: FplSquadData,
+  excelContext?: ExcelPointsContext,
+): FplSquadData {
+  const managerPoints = resolveExcelManagerPoints({
+    entryId: squad.entryId,
+    selectedPlayer: excelContext?.selectedPlayer,
+    players: excelContext?.players,
+  });
+
+  return {
+    ...squad,
+    eventPoints: managerPoints,
+  };
+}
+
 export function assembleFplSquadClient(
   entryId: string,
-  event: number,
+  event: number = DEFAULT_FPL_EVENT,
   picksPayload: unknown,
   bootstrapLookup: Map<number, BootstrapElementLookup>,
-  livePointsMap?: Map<number, number> | null,
+  livePointsMap?: ReadonlyMap<number, number> | null,
+  excelEventPoints?: number | null,
 ): FplSquadData | null {
   if (!isRecord(picksPayload) || !Array.isArray(picksPayload.picks)) {
     return null;
@@ -1313,15 +1385,16 @@ export function assembleFplSquadClient(
     .sort((a, b) => a.position - b.position);
 
   const history = isRecord(picksPayload.entry_history) ? picksPayload.entry_history : null;
+  const resolvedEventPoints =
+    typeof excelEventPoints === 'number' && Number.isFinite(excelEventPoints)
+      ? excelEventPoints
+      : 0;
 
   return {
     entryId,
     event,
     activeChip: typeof picksPayload.active_chip === 'string' ? picksPayload.active_chip : null,
-    eventPoints:
-      history && typeof history.points === 'number' && Number.isFinite(history.points)
-        ? history.points
-        : null,
+    eventPoints: resolvedEventPoints,
     totalPoints:
       history &&
       typeof history.total_points === 'number' &&
@@ -1568,8 +1641,8 @@ const PREVIEW_SAMPLE_ENTRY_122_PICKS = {
   active_chip: null,
   automatic_subs: [],
   entry_history: {
-    event: 11,
-    points: 68,
+    event: 12,
+    points: 0,
     total_points: 712,
     rank: 145820,
     points_on_bench: 9,
@@ -1593,13 +1666,23 @@ const PREVIEW_SAMPLE_ENTRY_122_PICKS = {
   ],
 };
 
-export function buildPreviewFallbackSquad(requestedEntryId: string, event: number = DEFAULT_FPL_EVENT): FplSquadData {
+export function buildPreviewFallbackSquad(
+  requestedEntryId: string,
+  event: number = DEFAULT_FPL_EVENT,
+  excelContext?: ExcelPointsContext,
+): FplSquadData {
+  const managerPoints = resolveExcelManagerPoints({
+    entryId: requestedEntryId,
+    selectedPlayer: excelContext?.selectedPlayer,
+    players: excelContext?.players,
+  });
   const assembled = assembleFplSquadClient(
     '122',
     event,
     PREVIEW_SAMPLE_ENTRY_122_PICKS,
     PREVIEW_SAMPLE_BOOTSTRAP,
     PREVIEW_SAMPLE_LIVE_POINTS,
+    managerPoints,
   );
   if (!assembled) {
     throw new Error('Failed to build entry 122 preview fallback squad');
@@ -1610,13 +1693,13 @@ export function buildPreviewFallbackSquad(requestedEntryId: string, event: numbe
   };
 }
 
-function getFplFriendlyErrorMessage(code: FplSquadErrorCode): string {
+function getFplFriendlyErrorMessage(code: FplSquadErrorCode, event: number = DEFAULT_FPL_EVENT): string {
   switch (code) {
     case 'INVALID_ENTRY_ID':
       return 'معرّف اللاعب (FPL ID) غير صالح أو غير مسجل.';
     case 'NOT_FOUND':
     case 'NO_PICKS':
-      return 'لا توجد تشكيلة مسجلة لهذا اللاعب في الجولة 11 (قد يكون المعرّف غير صحيح أو الفريق غير متاح).';
+      return `لا توجد تشكيلة مسجلة لهذا اللاعب في الجولة ${event} (قد يكون المعرّف غير صحيح أو الفريق غير متاح).`;
     default:
       return 'تعذر الاتصال بخادم Fantasy Premier League حالياً لجلب التشكيلة.';
   }
@@ -1628,6 +1711,7 @@ export async function fetchFplSquadData(
   endpoints: readonly string[] = DEFAULT_FPL_SQUAD_ENDPOINTS,
   fetcher: FetchLike | undefined = typeof fetch === 'function' ? fetch : undefined,
   enablePreviewFallback: boolean = true,
+  excelContext?: ExcelPointsContext,
 ): Promise<FplSquadFetchResult> {
   const entryId = isValidFplEntryId(rawEntryId);
   if (!entryId) {
@@ -1635,14 +1719,17 @@ export async function fetchFplSquadData(
       squad: null,
       source: 'error',
       errorCode: 'INVALID_ENTRY_ID',
-      errorMessage: getFplFriendlyErrorMessage('INVALID_ENTRY_ID'),
+      errorMessage: getFplFriendlyErrorMessage('INVALID_ENTRY_ID', event),
     };
   }
 
   const cacheKey = `${entryId}:${event}`;
   const cached = cachedClientSquads.get(cacheKey);
   if (cached && Date.now() - cached.cachedAt < FPL_CLIENT_CACHE_TTL_MS) {
-    return { squad: cached.squad, source: 'api' };
+    return {
+      squad: applyExcelPointsToSquad(cached.squad, excelContext),
+      source: 'api',
+    };
   }
 
   if (!fetcher) {
@@ -1650,7 +1737,7 @@ export async function fetchFplSquadData(
       squad: null,
       source: 'error',
       errorCode: 'UPSTREAM_UNAVAILABLE',
-      errorMessage: getFplFriendlyErrorMessage('UPSTREAM_UNAVAILABLE'),
+      errorMessage: getFplFriendlyErrorMessage('UPSTREAM_UNAVAILABLE', event),
     };
   }
 
@@ -1681,8 +1768,9 @@ export async function fetchFplSquadData(
       }
 
       if (response.ok) {
-        const squad = normalizeFplSquadResponse(payload);
-        if (squad) {
+        const normalized = normalizeFplSquadResponse(payload);
+        if (normalized) {
+          const squad = applyExcelPointsToSquad(normalized, excelContext);
           cachedClientSquads.set(cacheKey, { squad, cachedAt: Date.now() });
           return { squad, source: 'api' };
         }
@@ -1695,7 +1783,7 @@ export async function fetchFplSquadData(
             squad: null,
             source: 'error',
             errorCode: 'INVALID_ENTRY_ID',
-            errorMessage: getFplFriendlyErrorMessage('INVALID_ENTRY_ID'),
+            errorMessage: getFplFriendlyErrorMessage('INVALID_ENTRY_ID', event),
           };
         }
         if (payload.errorCode === 'NOT_FOUND' || payload.errorCode === 'NO_PICKS') {
@@ -1703,7 +1791,7 @@ export async function fetchFplSquadData(
             squad: null,
             source: 'error',
             errorCode: payload.errorCode,
-            errorMessage: getFplFriendlyErrorMessage(payload.errorCode),
+            errorMessage: getFplFriendlyErrorMessage(payload.errorCode, event),
           };
         }
         serverErrorCode = 'UPSTREAM_UNAVAILABLE';
@@ -1713,7 +1801,7 @@ export async function fetchFplSquadData(
     }
   }
 
-  // Client-side direct FPL API fallback (for static preview environments without Netlify Functions)
+  // Client-side direct FPL API fallback (picks + live player points from FPL; header points strictly from Excel)
   try {
     const picksResp = await fetcher(
       `${FPL_API_BASE}/entry/${encodeURIComponent(entryId)}/event/${event}/picks/`,
@@ -1725,7 +1813,7 @@ export async function fetchFplSquadData(
         squad: null,
         source: 'error',
         errorCode: 'NOT_FOUND',
-        errorMessage: getFplFriendlyErrorMessage('NOT_FOUND'),
+        errorMessage: getFplFriendlyErrorMessage('NOT_FOUND', event),
       };
     }
 
@@ -1777,12 +1865,19 @@ export async function fetchFplSquadData(
 
       const [bootstrapLookup, livePointsMap] = await Promise.all([bootstrapPromise, livePromise]);
 
+      const managerExcelPoints = resolveExcelManagerPoints({
+        entryId,
+        selectedPlayer: excelContext?.selectedPlayer,
+        players: excelContext?.players,
+      });
+
       const squad = assembleFplSquadClient(
         entryId,
         event,
         picksPayload,
         bootstrapLookup,
         livePointsMap,
+        managerExcelPoints,
       );
       if (squad && (squad.startingXI.length > 0 || squad.bench.length > 0)) {
         cachedClientSquads.set(cacheKey, { squad, cachedAt: Date.now() });
@@ -1793,7 +1888,7 @@ export async function fetchFplSquadData(
         squad: null,
         source: 'error',
         errorCode: 'NO_PICKS',
-        errorMessage: getFplFriendlyErrorMessage('NO_PICKS'),
+        errorMessage: getFplFriendlyErrorMessage('NO_PICKS', event),
       };
     }
   } catch {
@@ -1801,11 +1896,11 @@ export async function fetchFplSquadData(
   }
 
   if (enablePreviewFallback) {
-    const previewSquad = buildPreviewFallbackSquad(entryId, event);
+    const previewSquad = buildPreviewFallbackSquad(entryId, event, excelContext);
     const previewNotice =
       entryId === '122'
-        ? 'معاينة تجريبية: حظرَت بيئة المعاينة الاتصال المباشر بخادم FPL، لذا تُعرض تشكيلة الجولة 11 للمعرّف 122. عند النشر على Netlify سيتم جلب البيانات الحية عبر الدالة الخادمية.'
-        : `معاينة تجريبية: حظرَت بيئة المعاينة الاتصال المباشر بخادم FPL، لذا تُعرض عينة الجولة 11 (من المعرّف 122) بدلاً من المعرّف ${entryId}. عند النشر على Netlify سيتم جلب التشكيلة الحية تلقائياً.`;
+        ? `معاينة تجريبية: حظرَت بيئة المعاينة الاتصال المباشر بخادم FPL، لذا تُعرض تشكيلة الجولة ${event} للمعرّف 122 مع نقاط Excel. عند النشر على Netlify سيتم جلب التشكيلة الحية عبر الدالة الخادمية.`
+        : `معاينة تجريبية: حظرَت بيئة المعاينة الاتصال المباشر بخادم FPL، لذا تُعرض عينة الجولة ${event} (من المعرّف 122) بدلاً من المعرّف ${entryId} مع نقاط Excel. عند النشر على Netlify سيتم جلب التشكيلة الحية تلقائياً.`;
 
     return {
       squad: previewSquad,
@@ -1819,7 +1914,7 @@ export async function fetchFplSquadData(
     squad: null,
     source: 'error',
     errorCode: finalCode,
-    errorMessage: getFplFriendlyErrorMessage(finalCode),
+    errorMessage: getFplFriendlyErrorMessage(finalCode, event),
   };
 }
 
