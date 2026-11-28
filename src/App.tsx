@@ -7,8 +7,14 @@ import { LeagueBrandBadge } from './components/LeagueBrandBadge';
 import { MatchCard } from './components/MatchCard';
 import { MatchCardSkeleton } from './components/MatchCardSkeleton';
 import { PosterBackground } from './components/PosterBackground';
-import type { MatchItem, PlayerItem } from './types/match';
-import { fetchMatchesData, fetchPlayersData } from './utils/matchesService';
+import type { MatchItem, PlayerItem, TeamPlayCounts } from './types/match';
+import {
+  DEFAULT_FPL_EVENT,
+  fetchMatchesData,
+  fetchPlayersData,
+  fetchTeamCountsData,
+  getTeamCountsForTeam,
+} from './utils/matchesService';
 
 const AUTO_REFRESH_INTERVAL_MS = 60_000;
 
@@ -17,6 +23,8 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [players, setPlayers] = useState<PlayerItem[]>([]);
   const [isLoadingPlayers, setIsLoadingPlayers] = useState<boolean>(false);
+  const [teamCounts, setTeamCounts] = useState<Record<string, TeamPlayCounts>>({});
+  const [isLoadingTeamCounts, setIsLoadingTeamCounts] = useState<boolean>(true);
   const [expandedMatchId, setExpandedMatchId] = useState<string | null>(null);
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerItem | null>(null);
   const hasLoadedPlayersRef = useRef(false);
@@ -34,30 +42,56 @@ export default function App() {
     }
   }, []);
 
-  const loadPlayers = useCallback(async (showSpinner: boolean) => {
+  const loadTeamCounts = useCallback(async (loadedPlayers: readonly PlayerItem[], showSpinner: boolean) => {
     if (showSpinner) {
-      setIsLoadingPlayers(true);
+      setIsLoadingTeamCounts(true);
     }
-
-    const result = await fetchPlayersData();
-    setPlayers(result.players);
-    hasLoadedPlayersRef.current = true;
-
-    if (showSpinner) {
-      setIsLoadingPlayers(false);
-    }
+    const countsResult = await fetchTeamCountsData(loadedPlayers, DEFAULT_FPL_EVENT);
+    setTeamCounts(countsResult.teams);
+    setIsLoadingTeamCounts(false);
   }, []);
+
+  const loadPlayers = useCallback(
+    async (showSpinner: boolean) => {
+      if (showSpinner) {
+        setIsLoadingPlayers(true);
+      }
+
+      const result = await fetchPlayersData();
+      setPlayers(result.players);
+      hasLoadedPlayersRef.current = true;
+
+      if (showSpinner) {
+        setIsLoadingPlayers(false);
+      }
+
+      void loadTeamCounts(result.players, false);
+    },
+    [loadTeamCounts],
+  );
 
   useEffect(() => {
     let active = true;
 
     const runInitialLoad = async () => {
-      const result = await fetchMatchesData();
+      const [matchesResult, playersResult] = await Promise.all([
+        fetchMatchesData(),
+        fetchPlayersData(),
+      ]);
       if (!active) {
         return;
       }
-      setMatches(result.matches);
+      setMatches(matchesResult.matches);
       setIsLoading(false);
+      setPlayers(playersResult.players);
+      hasLoadedPlayersRef.current = true;
+
+      const countsResult = await fetchTeamCountsData(playersResult.players, DEFAULT_FPL_EVENT);
+      if (!active) {
+        return;
+      }
+      setTeamCounts(countsResult.teams);
+      setIsLoadingTeamCounts(false);
     };
 
     void runInitialLoad();
@@ -65,9 +99,7 @@ export default function App() {
     const intervalId = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
         void loadMatches(false);
-        if (hasLoadedPlayersRef.current) {
-          void loadPlayers(false);
-        }
+        void loadPlayers(false);
       }
     }, AUTO_REFRESH_INTERVAL_MS);
 
@@ -137,6 +169,9 @@ export default function App() {
                     match={match}
                     players={players}
                     isLoadingPlayers={isLoadingPlayers}
+                    homeCounts={getTeamCountsForTeam(teamCounts, match.homeTeam.name)}
+                    awayCounts={getTeamCountsForTeam(teamCounts, match.awayTeam.name)}
+                    isLoadingCounts={isLoadingTeamCounts}
                     isExpanded={expandedMatchId === match.id}
                     onToggle={() => handleToggleMatch(match.id)}
                     selectedPlayerId={selectedPlayer?.id ?? null}

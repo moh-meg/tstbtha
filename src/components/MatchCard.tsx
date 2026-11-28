@@ -1,6 +1,6 @@
 import { ChevronDown } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
-import type { MatchItem, PlayerItem } from '../types/match';
+import type { MatchItem, PlayerItem, TeamPlayCounts } from '../types/match';
 import { MatchPlayersPanel } from './MatchPlayersPanel';
 import { TeamLogoSlot } from './TeamLogoSlot';
 
@@ -8,16 +8,87 @@ interface MatchCardProps {
   match: MatchItem;
   players: readonly PlayerItem[];
   isLoadingPlayers: boolean;
+  homeCounts?: TeamPlayCounts | null;
+  awayCounts?: TeamPlayCounts | null;
+  isLoadingCounts?: boolean;
   isExpanded: boolean;
   onToggle: () => void;
   selectedPlayerId: string | null;
   onSelectPlayer: (player: PlayerItem) => void;
 }
 
+function TeamCountsSide({
+  teamName,
+  counts,
+  isLoading,
+  testId,
+}: {
+  teamName: string;
+  counts?: TeamPlayCounts | null;
+  isLoading: boolean;
+  testId: string;
+}) {
+  const formatVal = (val: number | undefined) => {
+    if (counts && typeof val === 'number' && Number.isFinite(val)) {
+      return String(val);
+    }
+    return isLoading ? '—' : '0';
+  };
+
+  return (
+    <dl
+      dir="rtl"
+      aria-label={teamName}
+      data-testid={testId}
+      className="grid grid-cols-2 gap-x-2 gap-y-1.5 px-2.5 py-2 text-center sm:grid-cols-4 sm:gap-1.5 sm:px-3.5 sm:py-2"
+    >
+      <div className="flex flex-col items-center justify-center">
+        <dt className="text-[10px] font-semibold leading-tight text-white/75">الإجمالي</dt>
+        <dd
+          data-testid={`${testId}-total`}
+          className="mt-0.5 text-xs sm:text-sm font-black leading-none text-white tabular-nums"
+        >
+          {formatVal(counts?.total)}
+        </dd>
+      </div>
+      <div className="flex flex-col items-center justify-center" title="لعبوا / مكتملون">
+        <dt className="text-[10px] font-semibold leading-tight text-white/75">لعبوا</dt>
+        <dd
+          data-testid={`${testId}-played`}
+          className="mt-0.5 text-xs sm:text-sm font-black leading-none text-[#6EE7B7] tabular-nums"
+        >
+          {formatVal(counts?.played)}
+        </dd>
+      </div>
+      <div className="flex flex-col items-center justify-center">
+        <dt className="text-[10px] font-semibold leading-tight text-white/75">يلعبون حالياً</dt>
+        <dd
+          data-testid={`${testId}-playing`}
+          className="mt-0.5 text-xs sm:text-sm font-black leading-none text-[#FDE047] tabular-nums"
+        >
+          {formatVal(counts?.playing)}
+        </dd>
+      </div>
+      <div className="flex flex-col items-center justify-center">
+        <dt className="text-[10px] font-semibold leading-tight text-white/75">متبقون</dt>
+        <dd
+          data-testid={`${testId}-remaining`}
+          className="mt-0.5 text-xs sm:text-sm font-black leading-none text-[#7DD3FC] tabular-nums"
+        >
+          {formatVal(counts?.remaining)}
+        </dd>
+      </div>
+    </dl>
+  );
+}
+
 export function MatchCard({
   match,
   players,
   isLoadingPlayers,
+  homeCounts = null,
+  awayCounts = null,
+  isLoadingCounts = false,
   isExpanded,
   onToggle,
   selectedPlayerId,
@@ -101,6 +172,26 @@ export function MatchCard({
         {/* Right Box: Team 2 Logo */}
         <TeamLogoSlot team={match.awayTeam} side="right" />
       </button>
+
+      {/* Aggregated Team Player Counts Bar (ONLY Total, Played, Playing, Remaining per team) */}
+      <div
+        dir="ltr"
+        data-testid="team-matchup-counts-bar"
+        className="grid grid-cols-2 divide-x divide-white/15 border-t-2 border-[#0038C7] bg-[#0B1B4D] text-white"
+      >
+        <TeamCountsSide
+          teamName={match.homeTeam.name}
+          counts={homeCounts}
+          isLoading={isLoadingCounts}
+          testId="home-team-counts"
+        />
+        <TeamCountsSide
+          teamName={match.awayTeam.name}
+          counts={awayCounts}
+          isLoading={isLoadingCounts}
+          testId="away-team-counts"
+        />
+      </div>
 
       <AnimatePresence initial={false}>
         {isExpanded && (

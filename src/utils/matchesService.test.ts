@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import {
   DEFAULT_FPL_EVENT,
   DEFAULT_MATCHES,
+  aggregateTeamCountsFromSquads,
   applyExcelPointsToSquad,
   assembleFplSquadClient,
   buildFplBootstrapLookupClient,
@@ -18,6 +19,7 @@ import {
   fetchFplSquadData,
   fetchMatchesData,
   fetchPlayersData,
+  fetchTeamCountsData,
   formatMatchScore,
   formatMatchStatusLabel,
   formatPlayerScore,
@@ -25,14 +27,17 @@ import {
   getNextHeadshotCandidateIndex,
   getPlayerFallbackInitials,
   getPlayersForTeam,
+  getTeamCountsForTeam,
   hasPkZipSignature,
   isArabicText,
   isValidFplEntryId,
   normalizeMatchesResponse,
+  normalizeTeamCountsResponse,
   parsePlayersWorkbookRows,
   parseWorkbookRows,
   resetFplClientCachesForTests,
   resolveExcelManagerPoints,
+  sumSquadPlayCountsList,
   resolveFplPlayerPhotoUrl,
   resolvePlayerHeadshotCandidates,
   resolveTeamLogoUrl,
@@ -855,6 +860,89 @@ test('computeSquadPlayCounts accounts for captain, Triple Captain (3xc -> 13), a
     }),
     { played: 6, playing: 6, remaining: 5, total: 17, isBenchBoost: true, isTripleCaptain: false },
   );
+});
+
+test('aggregateTeamCountsFromSquads and fetchTeamCountsData aggregate counts per team cleanly', async () => {
+  const players = [
+    { id: 'p1', teamName: 'اولاد زبانة', playerName: 'Mgr 1', playerId: '1001', playerScore: 10 },
+    { id: 'p2', teamName: 'اولاد زبانة', playerName: 'Mgr 2', playerId: '1002', playerScore: 12 },
+    { id: 'p3', teamName: 'اولاد الدليل', playerName: 'Mgr 3', playerId: '2001', playerScore: 15 },
+  ];
+
+  // 1. Endpoint response path
+  const apiResult = await fetchTeamCountsData(
+    players,
+    DEFAULT_FPL_EVENT,
+    ['/.netlify/functions/team-counts'],
+    async (url) => {
+      assert.equal(url, '/.netlify/functions/team-counts?event=12');
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => 'application/json' },
+        text: async () =>
+          JSON.stringify({
+            event: 12,
+            teams: {
+              'اولاد زبانة': { total: 25, played: 11, playing: 7, remaining: 7 },
+              'اولاد الدليل': { total: 16, played: 10, playing: 2, remaining: 4 },
+            },
+          }),
+      };
+    },
+    false,
+  );
+  assert.equal(apiResult.source, 'api');
+  assert.deepEqual(getTeamCountsForTeam(apiResult.teams, ' اولاد زبانة '), {
+    total: 25,
+    played: 11,
+    playing: 7,
+    remaining: 7,
+  });
+  assert.deepEqual(getTeamCountsForTeam(apiResult.teams, 'اولاد الدليل'), {
+    total: 16,
+    played: 10,
+    playing: 2,
+    remaining: 4,
+  });
+  assert.equal(normalizeTeamCountsResponse({ invalid: true }), null);
+
+  // 2. Preview fallback sums across all team members cleanly when upstream is blocked
+  const fallbackResult = await fetchTeamCountsData(
+    players,
+    DEFAULT_FPL_EVENT,
+    ['/.netlify/functions/team-counts'],
+    async () => {
+      throw new TypeError('Blocked');
+    },
+    true,
+  );
+  assert.equal(fallbackResult.source, 'preview-fallback');
+  // 2 members on اولاد زبانة -> 2 * { played: 6, playing: 4, remaining: 2, total: 12 }
+  assert.deepEqual(getTeamCountsForTeam(fallbackResult.teams, 'اولاد زبانة'), {
+    total: 24,
+    played: 12,
+    playing: 8,
+    remaining: 4,
+  });
+  // 1 member on اولاد الدليل -> { played: 6, playing: 4, remaining: 2, total: 12 }
+  assert.deepEqual(getTeamCountsForTeam(fallbackResult.teams, 'اولاد الدليل'), {
+    total: 12,
+    played: 6,
+    playing: 4,
+    remaining: 2,
+  });
+
+  // 3. Direct pure helper sanity
+  assert.deepEqual(
+    sumSquadPlayCountsList([
+      { played: 5, playing: 4, remaining: 3, total: 12, isBenchBoost: false, isTripleCaptain: false },
+      { played: 6, playing: 5, remaining: 5, total: 16, isBenchBoost: true, isTripleCaptain: false },
+    ]),
+    { total: 28, played: 11, playing: 9, remaining: 8 },
+  );
+  const emptyAgg = aggregateTeamCountsFromSquads(players, new Map());
+  assert.deepEqual(emptyAgg['اولاد زبانة'], { total: 0, played: 0, playing: 0, remaining: 0 });
 });
 
 

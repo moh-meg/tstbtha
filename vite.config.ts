@@ -28,6 +28,11 @@ function localNetlifyFunctionsPlugin(): Plugin {
           reqPath === '/.netlify/functions/player-photo'
         ) {
           fnRelativePath = 'netlify/functions/player-photo.js';
+        } else if (
+          reqPath === '/api/team-counts' ||
+          reqPath === '/.netlify/functions/team-counts'
+        ) {
+          fnRelativePath = 'netlify/functions/team-counts.js';
         }
 
         if (!fnRelativePath) {

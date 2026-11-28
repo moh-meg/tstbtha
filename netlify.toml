@@ -27,6 +27,12 @@
   status = 200
   force = true
 
+[[redirects]]
+  from = "/api/team-counts"
+  to = "/.netlify/functions/team-counts"
+  status = 200
+  force = true
+
 [[headers]]
   for = "/assets/*"
   [headers.values]

@@ -10,7 +10,9 @@ import type {
   MatchesFetchResult,
   PlayerItem,
   PlayersFetchResult,
+  TeamCountsFetchResult,
   TeamInfo,
+  TeamPlayCounts,
 } from '../types/match';
 
 export const DEFAULT_MATCHES_ENDPOINTS = [
@@ -26,6 +28,11 @@ export const DEFAULT_PLAYERS_ENDPOINTS = [
 export const DEFAULT_FPL_SQUAD_ENDPOINTS = [
   '/.netlify/functions/fpl-squad',
   '/api/fpl-squad',
+] as const;
+
+export const DEFAULT_TEAM_COUNTS_ENDPOINTS = [
+  '/.netlify/functions/team-counts',
+  '/api/team-counts',
 ] as const;
 
 export const DEFAULT_FPL_EVENT = 12;
@@ -2322,5 +2329,211 @@ export async function fetchFplSquadData(
     errorCode: finalCode,
     errorMessage: getFplFriendlyErrorMessage(finalCode, event),
   };
+}
+
+export function sumSquadPlayCountsList(
+  countsList: readonly FplSquadPlayCounts[],
+): TeamPlayCounts {
+  let total = 0;
+  let played = 0;
+  let playing = 0;
+  let remaining = 0;
+
+  for (const item of countsList) {
+    total += Number.isFinite(item.total) ? item.total : 0;
+    played += Number.isFinite(item.played) ? item.played : 0;
+    playing += Number.isFinite(item.playing) ? item.playing : 0;
+    remaining += Number.isFinite(item.remaining) ? item.remaining : 0;
+  }
+
+  return { total, played, playing, remaining };
+}
+
+export function aggregateTeamCountsFromSquads(
+  players: readonly PlayerItem[],
+  squadsByEntryId: ReadonlyMap<string, FplSquadData | null>,
+): Record<string, TeamPlayCounts> {
+  const groupedCounts = new Map<string, FplSquadPlayCounts[]>();
+
+  for (const player of players) {
+    const teamKey = player.teamName.trim().toLowerCase();
+    if (!teamKey) {
+      continue;
+    }
+    if (!groupedCounts.has(teamKey)) {
+      groupedCounts.set(teamKey, []);
+    }
+    const entryId = isValidFplEntryId(player.playerId);
+    if (!entryId) {
+      continue;
+    }
+    const squad = squadsByEntryId.get(entryId);
+    if (squad) {
+      groupedCounts.get(teamKey)!.push(computeSquadPlayCounts(squad));
+    }
+  }
+
+  const result: Record<string, TeamPlayCounts> = {};
+  for (const [teamKey, list] of groupedCounts.entries()) {
+    result[teamKey] = sumSquadPlayCountsList(list);
+  }
+  return result;
+}
+
+export function normalizeTeamCountsResponse(
+  raw: unknown,
+): Record<string, TeamPlayCounts> | null {
+  if (!isRecord(raw) || !isRecord(raw.teams)) {
+    return null;
+  }
+  const normalized: Record<string, TeamPlayCounts> = {};
+  let hasEntry = false;
+  for (const [teamName, rawCounts] of Object.entries(raw.teams)) {
+    if (!isRecord(rawCounts)) {
+      continue;
+    }
+    const key = teamName.trim().toLowerCase();
+    if (!key) {
+      continue;
+    }
+    const total =
+      typeof rawCounts.total === 'number' && Number.isFinite(rawCounts.total)
+        ? rawCounts.total
+        : 0;
+    const played =
+      typeof rawCounts.played === 'number' && Number.isFinite(rawCounts.played)
+        ? rawCounts.played
+        : 0;
+    const playing =
+      typeof rawCounts.playing === 'number' && Number.isFinite(rawCounts.playing)
+        ? rawCounts.playing
+        : 0;
+    const remaining =
+      typeof rawCounts.remaining === 'number' && Number.isFinite(rawCounts.remaining)
+        ? rawCounts.remaining
+        : 0;
+    normalized[key] = { total, played, playing, remaining };
+    hasEntry = true;
+  }
+  return hasEntry ? normalized : null;
+}
+
+export function getTeamCountsForTeam(
+  teamsMap: Readonly<Record<string, TeamPlayCounts>> | null | undefined,
+  teamName: string,
+): TeamPlayCounts | null {
+  if (!teamsMap) {
+    return null;
+  }
+  const key = teamName.trim().toLowerCase();
+  if (!key) {
+    return null;
+  }
+  return teamsMap[key] ?? null;
+}
+
+export async function fetchTeamCountsData(
+  players: readonly PlayerItem[],
+  event: number = DEFAULT_FPL_EVENT,
+  endpoints: readonly string[] = DEFAULT_TEAM_COUNTS_ENDPOINTS,
+  fetcher: FetchLike | undefined = typeof fetch === 'function' ? fetch : undefined,
+  enablePreviewFallback: boolean = true,
+): Promise<TeamCountsFetchResult> {
+  const updatedAt = new Date().toISOString();
+
+  if (!fetcher) {
+    return { event, teams: {}, source: 'empty', updatedAt };
+  }
+
+  for (const endpoint of endpoints) {
+    try {
+      const separator = endpoint.includes('?') ? '&' : '?';
+      const url = `${endpoint}${separator}event=${event}`;
+      const response = await fetcher(url, {
+        headers: { Accept: 'application/json' },
+      });
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const contentType = (response.headers?.get('content-type') ?? '').toLowerCase();
+      if (contentType.includes('text/html')) {
+        continue;
+      }
+
+      let payload: unknown = null;
+      if (typeof response.text === 'function') {
+        const rawText = (await response.text()).trim();
+        if (!rawText || rawText.startsWith('<')) {
+          continue;
+        }
+        payload = JSON.parse(rawText);
+      } else if (typeof response.json === 'function') {
+        payload = await response.json();
+      }
+
+      const normalized = normalizeTeamCountsResponse(payload);
+      if (normalized) {
+        return { event, teams: normalized, source: 'api', updatedAt };
+      }
+    } catch {
+      // Try next endpoint or direct FPL fallback
+    }
+  }
+
+  // Probe direct FPL bootstrap once before attempting per-manager picks
+  const validEntries: string[] = [];
+  const seenEntries = new Set<string>();
+  for (const player of players) {
+    const id = isValidFplEntryId(player.playerId);
+    if (id && !seenEntries.has(id)) {
+      seenEntries.add(id);
+      validEntries.push(id);
+    }
+  }
+
+  if (validEntries.length === 0) {
+    return { event, teams: {}, source: 'empty', updatedAt };
+  }
+
+  try {
+    const bsCheck = await fetcher(`${FPL_API_BASE}/bootstrap-static/`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (bsCheck.ok) {
+      const squadsByEntryId = new Map<string, FplSquadData | null>();
+      let cursor = 0;
+      const workerCount = Math.min(6, validEntries.length);
+      await Promise.all(
+        Array.from({ length: workerCount }, async () => {
+          while (cursor < validEntries.length) {
+            const idx = cursor;
+            cursor += 1;
+            const entryId = validEntries[idx];
+            const res = await fetchFplSquadData(entryId, event, [], fetcher, false, { players });
+            squadsByEntryId.set(entryId, res.squad);
+          }
+        }),
+      );
+      const teams = aggregateTeamCountsFromSquads(players, squadsByEntryId);
+      if (Object.keys(teams).length > 0) {
+        return { event, teams, source: 'direct', updatedAt };
+      }
+    }
+  } catch {
+    // Blocked by CORS or upstream failure
+  }
+
+  if (enablePreviewFallback) {
+    const squadsByEntryId = new Map<string, FplSquadData | null>();
+    for (const entryId of validEntries) {
+      squadsByEntryId.set(entryId, buildPreviewFallbackSquad(entryId, event, { players }));
+    }
+    const teams = aggregateTeamCountsFromSquads(players, squadsByEntryId);
+    return { event, teams, source: 'preview-fallback', updatedAt };
+  }
+
+  return { event, teams: {}, source: 'empty', updatedAt };
 }
 

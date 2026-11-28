@@ -914,3 +914,255 @@ export async function getFplSquadWithCache(
 
   return entryCache.get(nowMs, () => loader(validEntryId, validEvent));
 }
+
+/**
+ * Computes Played / Live / Remaining / Total player counts for a single manager squad
+ * using the exact same rules as the squad modal (Captain 2x/3x with TC, and Bench Boost BB).
+ *
+ * @param {{
+ *   activeChip?: string | null,
+ *   startingXI?: Array<{
+ *     isCaptain?: boolean,
+ *     multiplier?: number,
+ *     fixtureStatus?: string,
+ *     hasStarted?: boolean,
+ *   }>,
+ *   bench?: Array<{
+ *     isCaptain?: boolean,
+ *     multiplier?: number,
+ *     fixtureStatus?: string,
+ *     hasStarted?: boolean,
+ *   }>,
+ * } | null | undefined} squad
+ * @returns {{
+ *   played: number,
+ *   playing: number,
+ *   remaining: number,
+ *   total: number,
+ *   isBenchBoost: boolean,
+ *   isTripleCaptain: boolean,
+ * }}
+ */
+export function computeSquadPlayCounts(squad) {
+  if (!squad) {
+    return {
+      played: 0,
+      playing: 0,
+      remaining: 0,
+      total: 0,
+      isBenchBoost: false,
+      isTripleCaptain: false,
+    };
+  }
+
+  const normalizedChip = String(squad.activeChip || '').trim().toLowerCase();
+  const isBenchBoost = normalizedChip === 'bboost' || normalizedChip === 'bb';
+  const isTripleCaptain = normalizedChip === '3xc' || normalizedChip === 'tc';
+  const startingXI = Array.isArray(squad.startingXI) ? squad.startingXI : [];
+  const bench = Array.isArray(squad.bench) ? squad.bench : [];
+  const pool = isBenchBoost ? [...startingXI, ...bench] : startingXI;
+  const hasExplicitCaptain = pool.some((p) => Boolean(p?.isCaptain));
+
+  let played = 0;
+  let playing = 0;
+  let remaining = 0;
+  let total = 0;
+
+  for (const player of pool) {
+    const mult =
+      typeof player?.multiplier === 'number' && Number.isFinite(player.multiplier)
+        ? player.multiplier
+        : 1;
+    let weight = 1;
+    if (hasExplicitCaptain) {
+      if (player?.isCaptain) {
+        weight = isTripleCaptain || mult >= 3 ? 3 : 2;
+      }
+    } else if (mult >= 3) {
+      weight = 3;
+    } else if (mult === 2) {
+      weight = 2;
+    }
+
+    const status =
+      player?.fixtureStatus === 'finished' ||
+      player?.fixtureStatus === 'live' ||
+      player?.fixtureStatus === 'upcoming'
+        ? player.fixtureStatus
+        : player?.hasStarted === false
+          ? 'upcoming'
+          : 'finished';
+
+    if (status === 'finished') {
+      played += weight;
+    } else if (status === 'live') {
+      playing += weight;
+    } else {
+      remaining += weight;
+    }
+    total += weight;
+  }
+
+  return {
+    played,
+    playing,
+    remaining,
+    total,
+    isBenchBoost,
+    isTripleCaptain,
+  };
+}
+
+/**
+ * Sums an array of per-manager squad counts into a team total.
+ *
+ * @param {Array<{ total?: number, played?: number, playing?: number, remaining?: number }>} countsList
+ * @returns {{ total: number, played: number, playing: number, remaining: number }}
+ */
+export function sumSquadPlayCountsList(countsList) {
+  let total = 0;
+  let played = 0;
+  let playing = 0;
+  let remaining = 0;
+
+  if (Array.isArray(countsList)) {
+    for (const item of countsList) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      total += typeof item.total === 'number' && Number.isFinite(item.total) ? item.total : 0;
+      played += typeof item.played === 'number' && Number.isFinite(item.played) ? item.played : 0;
+      playing += typeof item.playing === 'number' && Number.isFinite(item.playing) ? item.playing : 0;
+      remaining +=
+        typeof item.remaining === 'number' && Number.isFinite(item.remaining) ? item.remaining : 0;
+    }
+  }
+
+  return { total, played, playing, remaining };
+}
+
+/**
+ * Aggregates Played / Live / Remaining / Total counts for every team in `players`.
+ *
+ * @param {{
+ *   players: Array<{ teamName?: string, playerId?: string | number }>,
+ *   event?: number,
+ *   nowMs?: number,
+ *   squadLoader?: (entryId: string, event: number) => Promise<any>,
+ *   concurrency?: number,
+ * }} params
+ * @returns {Promise<{
+ *   event: number,
+ *   teams: Record<string, { total: number, played: number, playing: number, remaining: number }>,
+ *   succeededEntries: number,
+ *   attemptedEntries: number,
+ * }>}
+ */
+export async function aggregateAllTeamsPlayCounts({
+  players = [],
+  event = DEFAULT_FPL_EVENT,
+  nowMs = Date.now(),
+  squadLoader = null,
+  concurrency = 11,
+} = {}) {
+  const validEvent = validateEventId(event, DEFAULT_FPL_EVENT) ?? DEFAULT_FPL_EVENT;
+  const loader =
+    squadLoader ||
+    (async (entryId, ev) => {
+      const { payload } = await getFplSquadWithCache(entryId, ev, nowMs);
+      return payload;
+    });
+
+  /** @type {Map<string, { canonicalName: string, entryIds: string[] }>} */
+  const teamEntryGroups = new Map();
+  const uniqueEntryIds = [];
+  const seenEntries = new Set();
+
+  for (const player of Array.isArray(players) ? players : []) {
+    const rawTeam = typeof player?.teamName === 'string' ? player.teamName.trim() : '';
+    if (!rawTeam) {
+      continue;
+    }
+    const teamKey = rawTeam.toLowerCase();
+    let group = teamEntryGroups.get(teamKey);
+    if (!group) {
+      group = { canonicalName: rawTeam, entryIds: [] };
+      teamEntryGroups.set(teamKey, group);
+    }
+
+    const entryId = validateEntryId(player?.playerId);
+    if (entryId) {
+      group.entryIds.push(entryId);
+      if (!seenEntries.has(entryId)) {
+        seenEntries.add(entryId);
+        uniqueEntryIds.push(entryId);
+      }
+    }
+  }
+
+  if (!squadLoader && uniqueEntryIds.length > 0) {
+    // Pre-warm shared caches once (and fail fast if FPL upstream is blocked/down)
+    await Promise.all([
+      fetchBootstrapMapsWithCache(nowMs),
+      fetchEventLiveStatsWithCache(validEvent, nowMs),
+      fetchEventFixturesWithCache(validEvent, nowMs),
+    ]);
+  }
+
+  const entryCountsMap = new Map();
+  let succeededEntries = 0;
+  let lastUpstreamError = null;
+  const workerCount = Math.max(1, Math.min(concurrency, uniqueEntryIds.length || 1));
+  let cursor = 0;
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (cursor < uniqueEntryIds.length) {
+        const idx = cursor;
+        cursor += 1;
+        const entryId = uniqueEntryIds[idx];
+        try {
+          const squad = await loader(entryId, validEvent);
+          if (squad) {
+            entryCountsMap.set(entryId, computeSquadPlayCounts(squad));
+            succeededEntries += 1;
+          }
+        } catch (err) {
+          lastUpstreamError = err;
+        }
+      }
+    }),
+  );
+
+  if (uniqueEntryIds.length > 0 && succeededEntries === 0) {
+    if (lastUpstreamError instanceof FplUpstreamError) {
+      throw lastUpstreamError;
+    }
+    throw new FplUpstreamError(
+      502,
+      'UPSTREAM_UNAVAILABLE',
+      'Failed to load FPL squad counts for team members.',
+    );
+  }
+
+  /** @type {Record<string, { total: number, played: number, playing: number, remaining: number }>} */
+  const teams = {};
+  for (const group of teamEntryGroups.values()) {
+    const memberCounts = [];
+    for (const entryId of group.entryIds) {
+      const counts = entryCountsMap.get(entryId);
+      if (counts) {
+        memberCounts.push(counts);
+      }
+    }
+    teams[group.canonicalName] = sumSquadPlayCountsList(memberCounts);
+  }
+
+  return {
+    event: validEvent,
+    teams,
+    succeededEntries,
+    attemptedEntries: uniqueEntryIds.length,
+  };
+}
+

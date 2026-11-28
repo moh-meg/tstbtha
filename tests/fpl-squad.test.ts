@@ -8,13 +8,21 @@ import {
   buildPlayerPhotoCandidates,
   buildTeamFixtureLookup,
   FplUpstreamError,
+  aggregateAllTeamsPlayCounts,
+  computeSquadPlayCounts,
   getFplSquadWithCache,
   resetFplCachesForTests,
   resolvePlayerPhotoUrl,
+  sumSquadPlayCountsList,
   validateEntryId,
   validateEventId,
 } from '../netlify/lib/fpl.js';
 import { handler, resolveExcelPointsForEntry } from '../netlify/functions/fpl-squad.js';
+import {
+  getTeamCountsWithCache,
+  handler as teamCountsHandler,
+  resetTeamCountsCacheForTests,
+} from '../netlify/functions/team-counts.js';
 
 test('validateEntryId accepts numeric manager IDs and rejects invalid inputs', () => {
   assert.equal(validateEntryId('2249544'), '2249544');
@@ -316,4 +324,142 @@ test('assembleFplSquad marks started/played players for points and unplayed play
   assert.equal(squad.bench[0].opponentDisplay, 'BGW');
   // Null fixtures payload gracefully defaults to null lookup & shows points
   assert.equal(buildTeamFixtureLookup(null, bootstrapMaps.teamsById), null);
+});
+
+test('aggregateAllTeamsPlayCounts sums each manager squad counts (Captain 2x, TC 3x, BB 16) per team', async () => {
+  const makeStarter = (pos: number, status: 'finished' | 'live' | 'upcoming', isCap = false, mult = 1) => ({
+    position: pos,
+    isCaptain: isCap,
+    multiplier: mult,
+    fixtureStatus: status,
+    hasStarted: status !== 'upcoming',
+  });
+  const makeBench = (pos: number, status: 'finished' | 'live' | 'upcoming') => ({
+    position: pos,
+    isCaptain: false,
+    multiplier: 0,
+    fixtureStatus: status,
+    hasStarted: status !== 'upcoming',
+  });
+
+  const squads = new Map<string, unknown>([
+    [
+      // Standard 12 total: 6 finished, 4 live (incl. captain 2x), 2 upcoming
+      '101',
+      {
+        activeChip: null,
+        startingXI: [
+          makeStarter(1, 'finished'),
+          makeStarter(2, 'finished'),
+          makeStarter(3, 'finished'),
+          makeStarter(4, 'finished'),
+          makeStarter(5, 'finished'),
+          makeStarter(6, 'finished'),
+          makeStarter(7, 'live'),
+          makeStarter(8, 'live'),
+          makeStarter(9, 'live', true, 2),
+          makeStarter(10, 'upcoming'),
+          makeStarter(11, 'upcoming'),
+        ],
+        bench: [makeBench(12, 'finished'), makeBench(13, 'upcoming'), makeBench(14, 'upcoming'), makeBench(15, 'upcoming')],
+      },
+    ],
+    [
+      // Triple Captain 13 total: 5 finished, 3 live, 5 upcoming (captain 3x)
+      '102',
+      {
+        activeChip: '3xc',
+        startingXI: [
+          makeStarter(1, 'finished'),
+          makeStarter(2, 'finished'),
+          makeStarter(3, 'finished'),
+          makeStarter(4, 'finished'),
+          makeStarter(5, 'finished'),
+          makeStarter(6, 'live'),
+          makeStarter(7, 'live'),
+          makeStarter(8, 'live'),
+          makeStarter(9, 'upcoming'),
+          makeStarter(10, 'upcoming'),
+          makeStarter(11, 'upcoming', true, 3),
+        ],
+        bench: [makeBench(12, 'finished'), makeBench(13, 'finished'), makeBench(14, 'finished'), makeBench(15, 'finished')],
+      },
+    ],
+    [
+      // Bench Boost 16 total: 10 finished (incl. captain 2x), 2 live, 4 upcoming
+      '201',
+      {
+        activeChip: 'bboost',
+        startingXI: [
+          makeStarter(1, 'finished'),
+          makeStarter(2, 'finished'),
+          makeStarter(3, 'finished'),
+          makeStarter(4, 'finished'),
+          makeStarter(5, 'finished'),
+          makeStarter(6, 'finished'),
+          makeStarter(7, 'finished'),
+          makeStarter(8, 'finished', true, 2),
+          makeStarter(9, 'live'),
+          makeStarter(10, 'live'),
+          makeStarter(11, 'upcoming'),
+        ],
+        bench: [
+          makeBench(12, 'finished'),
+          makeBench(13, 'upcoming'),
+          makeBench(14, 'upcoming'),
+          makeBench(15, 'upcoming'),
+        ],
+      },
+    ],
+  ]);
+
+  const result = await aggregateAllTeamsPlayCounts({
+    players: [
+      { teamName: 'اولاد زبانة', playerId: '101' },
+      { teamName: 'اولاد زبانة', playerId: '102' },
+      { teamName: 'اولاد الدليل', playerId: '201' },
+      { teamName: 'اولاد الدليل', playerId: '999999999' }, // missing/404 manager skipped cleanly
+    ],
+    event: 12,
+    squadLoader: async (entryId) => squads.get(entryId) ?? null,
+  });
+
+  assert.equal(result.event, 12);
+  assert.deepEqual(result.teams['اولاد زبانة'], {
+    total: 25, // 12 + 13
+    played: 11, // 6 + 5
+    playing: 7, // 4 + 3
+    remaining: 7, // 2 + 5
+  });
+  assert.deepEqual(result.teams['اولاد الدليل'], {
+    total: 16,
+    played: 10,
+    playing: 2,
+    remaining: 4,
+  });
+  assert.deepEqual(
+    sumSquadPlayCountsList([
+      computeSquadPlayCounts(squads.get('101') as never),
+      computeSquadPlayCounts(squads.get('102') as never),
+    ]),
+    result.teams['اولاد زبانة'],
+  );
+
+  // team-counts handler returns 400 on invalid event & caches valid responses
+  const badRes = await teamCountsHandler({ queryStringParameters: { event: '99' } });
+  assert.equal(badRes.statusCode, 400);
+
+  resetTeamCountsCacheForTests();
+  let calls = 0;
+  const first = await getTeamCountsWithCache(12, 1_000_000, async () => {
+    calls += 1;
+    return { event: 12, teams: result.teams, updatedAt: 'now' };
+  });
+  const second = await getTeamCountsWithCache(12, Date.now() + 5_000, async () => {
+    calls += 1;
+    return { event: 12, teams: result.teams, updatedAt: 'now' };
+  });
+  assert.equal(calls, 1);
+  assert.equal(first.cacheState, 'MISS');
+  assert.equal(second.cacheState, 'HIT');
 });

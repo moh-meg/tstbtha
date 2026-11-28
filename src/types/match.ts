@@ -84,6 +84,20 @@ export interface FplSquadPlayCounts {
   isTripleCaptain: boolean;
 }
 
+export interface TeamPlayCounts {
+  total: number;
+  played: number;
+  playing: number;
+  remaining: number;
+}
+
+export interface TeamCountsFetchResult {
+  event: number;
+  teams: Record<string, TeamPlayCounts>;
+  source: 'api' | 'direct' | 'preview-fallback' | 'empty';
+  updatedAt: string;
+}
+
 export interface FplSquadData {
   entryId: string;
   event: number;
