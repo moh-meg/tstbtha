@@ -10,8 +10,11 @@ import {
   buildFplLivePointsMapClient,
   buildFplLiveStatsMapClient,
   buildFplPlayerPhotoCandidates,
+  buildFplTeamCodeMapClient,
   buildFplTeamShortMapClient,
+  buildTeamBadgeUrls,
   buildTeamFixtureLookupClient,
+  computeSquadPlayCounts,
   fetchFplSquadData,
   fetchMatchesData,
   fetchPlayersData,
@@ -229,13 +232,7 @@ test('isValidFplEntryId, buildFplPlayerPhotoCandidates, and assembleFplSquadClie
     }),
     [
       '/custom-players/Signing.png',
-      '/custom-players/Signing.jpg',
-      '/custom-players/Signing.jpeg',
-      '/custom-players/Signing.webp',
       '/custom-players/signing.png',
-      '/custom-players/signing.jpg',
-      '/custom-players/signing.jpeg',
-      '/custom-players/signing.webp',
       'https://resources.premierleague.com/premierleague/photos/players/250x250/p654321.png',
       '/.netlify/functions/player-photo?code=654321&name=New%20Signing&webName=Signing&firstName=New&secondName=Signing&team=Arsenal&teamCode=3',
     ],
@@ -251,18 +248,12 @@ test('isValidFplEntryId, buildFplPlayerPhotoCandidates, and assembleFplSquadClie
     }),
     [
       '/custom-players/Haaland.png',
-      '/custom-players/Haaland.jpg',
-      '/custom-players/Haaland.jpeg',
-      '/custom-players/Haaland.webp',
       '/custom-players/haaland.png',
-      '/custom-players/haaland.jpg',
-      '/custom-players/haaland.jpeg',
-      '/custom-players/haaland.webp',
       'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
       '/.netlify/functions/player-photo?code=223094&name=Erling%20Haaland&webName=Haaland&firstName=Erling&secondName=Haaland&team=Man%20City&teamCode=43',
     ],
   );
-  // Diacritic/accent-normalized web_name generates exact, lowercase, normalized, normalized-lowercase across .png/.jpg/.jpeg/.webp
+  // Diacritic/accent-normalized web_name generates exact, lowercase, normalized, normalized-lowercase .png only
   const dedicCandidates = buildFplPlayerPhotoCandidates(12345, null, {
     webName: 'Dedić',
     firstName: 'Amar',
@@ -270,9 +261,10 @@ test('isValidFplEntryId, buildFplPlayerPhotoCandidates, and assembleFplSquadClie
   });
   assert.equal(dedicCandidates[0], '/custom-players/Dedi%C4%87.png');
   assert.ok(dedicCandidates.includes('/custom-players/Dedic.png'));
-  assert.ok(dedicCandidates.includes('/custom-players/dedic.webp'));
+  assert.ok(dedicCandidates.includes('/custom-players/dedic.png'));
+  assert.equal(dedicCandidates.some((c) => /\.(jpg|jpeg|webp)$/i.test(c)), false);
   assert.ok(
-    dedicCandidates.indexOf('/custom-players/dedic.webp') <
+    dedicCandidates.indexOf('/custom-players/dedic.png') <
       dedicCandidates.indexOf('https://resources.premierleague.com/premierleague/photos/players/250x250/p12345.png'),
   );
   assert.equal(
@@ -341,13 +333,7 @@ test('isValidFplEntryId, buildFplPlayerPhotoCandidates, and assembleFplSquadClie
   );
   assert.deepEqual(squad.bench[1].photoUrls, [
     '/custom-players/NoCode.png',
-    '/custom-players/NoCode.jpg',
-    '/custom-players/NoCode.jpeg',
-    '/custom-players/NoCode.webp',
     '/custom-players/nocode.png',
-    '/custom-players/nocode.jpg',
-    '/custom-players/nocode.jpeg',
-    '/custom-players/nocode.webp',
     '/.netlify/functions/player-photo?name=Jamie%20Gittens&webName=NoCode&firstName=Jamie&secondName=Gittens&team=Arsenal&teamCode=3',
   ]);
 });
@@ -356,6 +342,7 @@ test('resolvePlayerHeadshotCandidates, getNextHeadshotCandidateIndex, getPlayerF
   const candidates = resolvePlayerHeadshotCandidates({
     photoUrls: [
       'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
+      '/custom-players/Haaland.jpg',
       '/custom-players/Haaland.png',
     ],
     photoUrl: 'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
@@ -369,8 +356,9 @@ test('resolvePlayerHeadshotCandidates, getNextHeadshotCandidateIndex, getPlayerF
   });
 
   assert.equal(candidates[0], '/custom-players/Haaland.png');
+  assert.equal(candidates.some((c) => c.endsWith('.jpg')), false);
   assert.ok(
-    candidates.indexOf('/custom-players/haaland.webp') <
+    candidates.indexOf('/custom-players/haaland.png') <
       candidates.indexOf('https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png'),
   );
   assert.equal(
@@ -583,36 +571,52 @@ test('fetchFplSquadData falls back to entry 122 preview squad for GW12 with Exce
   assert.equal(captain?.multiplier, 2);
   assert.equal(captain?.points, 12);
   assert.equal(captain?.hasStarted, true);
+  assert.equal(captain?.fixtureStatus, 'live');
   assert.equal(zeroStarter?.points, 0);
   assert.equal(zeroStarter?.hasStarted, false);
-  assert.equal(zeroStarter?.opponentDisplay, 'vs AVL');
+  assert.equal(zeroStarter?.fixtureStatus, 'upcoming');
+  assert.equal(zeroStarter?.opponentDisplay, 'AVL (H)');
+  assert.equal(zeroStarter?.opponentShortName, 'AVL');
+  assert.equal(zeroStarter?.opponentTeamCode, 7);
   assert.equal(palmer?.hasStarted, false);
-  assert.equal(palmer?.opponentDisplay, 'vs AVL');
+  assert.equal(palmer?.opponentDisplay, 'AVL (H)');
   assert.equal(rogers?.hasStarted, false);
-  assert.equal(rogers?.opponentDisplay, '@ CHE');
+  assert.equal(rogers?.opponentDisplay, 'CHE (A)');
+  assert.equal(rogers?.opponentShortName, 'CHE');
+  assert.equal(rogers?.opponentTeamCode, 8);
   assert.equal(watkins?.hasStarted, false);
-  assert.equal(watkins?.opponentDisplay, '@ CHE');
+  assert.equal(watkins?.opponentDisplay, 'CHE (A)');
   assert.equal(vice?.isViceCaptain, true);
   assert.equal(vice?.hasStarted, true);
+  assert.equal(vice?.fixtureStatus, 'finished');
   assert.deepEqual(
     previewResult.squad.bench.map((p) => p.elementId),
     [497, 31, 346, 304],
   );
   assert.equal(previewResult.squad.pointsOnBench, 8);
+  const previewCounts = computeSquadPlayCounts(previewResult.squad);
+  assert.deepEqual(previewCounts, {
+    played: 6,
+    playing: 4,
+    remaining: 2,
+    total: 12,
+    isBenchBoost: false,
+    isTripleCaptain: false,
+  });
   const withMissingExcel = applyExcelPointsToSquad(previewResult.squad, { players: [] });
   assert.equal(withMissingExcel.eventPoints, 0);
   assert.equal(withMissingExcel.startingXI.find((p) => p.elementId === 411)?.points, 12);
 });
 
-test('fetchFplSquadData resolves GW12 opponents for unplayed players and points for started/played players', async () => {
+test('fetchFplSquadData resolves GW12 opponents with (H)/(A) + badge codes for unplayed players and points for started/played players', async () => {
   resetFplClientCachesForTests();
 
   const rawBootstrap = {
     teams: [
-      { id: 1, short_name: 'ARS', name: 'Arsenal' },
-      { id: 7, short_name: 'CHE', name: 'Chelsea' },
-      { id: 12, short_name: 'LIV', name: 'Liverpool' },
-      { id: 19, short_name: 'WHU', name: 'West Ham' },
+      { id: 1, code: 3, short_name: 'ARS', name: 'Arsenal' },
+      { id: 7, code: 8, short_name: 'CHE', name: 'Chelsea' },
+      { id: 12, code: 14, short_name: 'LIV', name: 'Liverpool' },
+      { id: 19, code: 21, short_name: 'WHU', name: 'West Ham' },
     ],
     elements: [
       { id: 10, code: 154561, web_name: 'Raya', element_type: 1, team: 1 },
@@ -677,7 +681,7 @@ test('fetchFplSquadData resolves GW12 opponents for unplayed players and points 
           headers: { get: () => 'application/json' },
           text: async () =>
             JSON.stringify([
-              // Kickoff in past (started even with 0 minutes)
+              // Kickoff in past (started & live even with 0 minutes)
               { team_h: 1, team_a: 12, started: false, finished: false, kickoff_time: '2020-11-22T15:00:00Z' },
               // Future fixture, unstarted
               { team_h: 12, team_a: 7, started: false, finished: false, kickoff_time: '2099-11-29T16:30:00Z' },
@@ -703,10 +707,17 @@ test('fetchFplSquadData resolves GW12 opponents for unplayed players and points 
   assert.equal(result.squad.eventPoints, 49);
   // Raya (ARS): past kickoff_time -> hasStarted=true, shows 0 pts
   assert.equal(result.squad.startingXI[0].hasStarted, true);
+  assert.equal(result.squad.startingXI[0].fixtureStatus, 'live');
   assert.equal(result.squad.startingXI[0].points, 0);
-  // Palmer (CHE away @ LIV): future kickoff_time & 0 mins -> hasStarted=false, shows '@ LIV'
+  // Palmer (CHE away @ LIV): future kickoff_time & 0 mins -> hasStarted=false, shows 'LIV (A)' with LIV code 14
   assert.equal(result.squad.startingXI[1].hasStarted, false);
-  assert.equal(result.squad.startingXI[1].opponentDisplay, '@ LIV');
+  assert.equal(result.squad.startingXI[1].fixtureStatus, 'upcoming');
+  assert.equal(result.squad.startingXI[1].opponentDisplay, 'LIV (A)');
+  assert.equal(result.squad.startingXI[1].opponentTeamCode, 14);
+  assert.deepEqual(buildTeamBadgeUrls(14), [
+    'https://resources.premierleague.com/premierleague/badges/70/t14.png',
+    'https://resources.premierleague.com/premierleague/badges/t14.png',
+  ]);
   // Salah (LIV): minutes=90 > 0 -> hasStarted=true, shows 8 pts
   assert.equal(result.squad.startingXI[2].hasStarted, true);
   assert.equal(result.squad.startingXI[2].points, 8);
@@ -715,19 +726,135 @@ test('fetchFplSquadData resolves GW12 opponents for unplayed players and points 
   assert.equal(result.squad.bench[0].opponentDisplay, 'BGW');
 
   const teamsMap = buildFplTeamShortMapClient(rawBootstrap);
+  const teamCodesMap = buildFplTeamCodeMapClient(rawBootstrap);
   const liveStats = buildFplLiveStatsMapClient({ elements: [{ id: 10, stats: { total_points: 6, minutes: 90 } }] });
   assert.equal(liveStats.get(10)?.minutes, 90);
   assert.equal(teamsMap.get(7), 'CHE');
+  assert.equal(teamCodesMap.get(7), 8);
   const dgwLookup = buildTeamFixtureLookupClient(
     [
-      { team_h: 1, team_a: 7, started: true, kickoff_time: '2020-01-01T00:00:00Z' },
+      { team_h: 1, team_a: 7, started: true, finished: true, kickoff_time: '2020-01-01T00:00:00Z' },
       { team_h: 12, team_a: 1, started: false, kickoff_time: '2099-01-01T00:00:00Z' },
     ],
     teamsMap,
     Date.parse('2026-01-01T00:00:00Z'),
+    teamCodesMap,
   );
   assert.equal(dgwLookup?.get(1)?.started, true);
-  assert.equal(dgwLookup?.get(1)?.opponentDisplay, 'vs CHE, @ LIV');
+  assert.equal(dgwLookup?.get(1)?.finished, false);
+  assert.equal(dgwLookup?.get(1)?.fixtureStatus, 'live');
+  assert.equal(dgwLookup?.get(1)?.opponentDisplay, 'CHE (H), LIV (A)');
+});
+
+test('computeSquadPlayCounts accounts for captain, Triple Captain (3xc -> 13), and Bench Boost (bboost -> 16/17)', () => {
+  const makePlayer = (
+    position: number,
+    fixtureStatus: 'finished' | 'live' | 'upcoming',
+    options: { isCaptain?: boolean; multiplier?: number } = {},
+  ) => ({
+    elementId: position,
+    code: null,
+    webName: `P${position}`,
+    elementType: position === 1 || position === 12 ? 1 : 3,
+    positionLabel: 'MID' as const,
+    teamShortName: 'ARS',
+    photoUrl: '',
+    position,
+    multiplier: options.multiplier ?? (position <= 11 ? 1 : 0),
+    isCaptain: Boolean(options.isCaptain),
+    isViceCaptain: false,
+    fixtureStatus,
+    hasStarted: fixtureStatus !== 'upcoming',
+    points: 0,
+  });
+
+  const baseXI = [
+    makePlayer(1, 'finished'),
+    makePlayer(2, 'finished'),
+    makePlayer(3, 'finished'),
+    makePlayer(4, 'finished'),
+    makePlayer(5, 'finished'),
+    makePlayer(6, 'live'),
+    makePlayer(7, 'live'),
+    makePlayer(8, 'upcoming'),
+    makePlayer(9, 'upcoming'),
+    makePlayer(10, 'upcoming'),
+    makePlayer(11, 'live', { isCaptain: true, multiplier: 2 }),
+  ];
+  const baseBench = [
+    makePlayer(12, 'finished'),
+    makePlayer(13, 'live'),
+    makePlayer(14, 'upcoming'),
+    makePlayer(15, 'upcoming'),
+  ];
+
+  // 1. Standard squad (no chip): 11 starters + 1 extra captain = 12
+  assert.deepEqual(
+    computeSquadPlayCounts({
+      entryId: '1',
+      event: 12,
+      activeChip: null,
+      eventPoints: 0,
+      totalPoints: null,
+      pointsOnBench: null,
+      rank: null,
+      startingXI: baseXI,
+      bench: baseBench,
+      updatedAt: '',
+    }),
+    { played: 5, playing: 4, remaining: 3, total: 12, isBenchBoost: false, isTripleCaptain: false },
+  );
+
+  // 2. Triple Captain (3xc): 11 starters + 2 extra captain = 13
+  assert.deepEqual(
+    computeSquadPlayCounts({
+      entryId: '1',
+      event: 12,
+      activeChip: '3xc',
+      eventPoints: 0,
+      totalPoints: null,
+      pointsOnBench: null,
+      rank: null,
+      startingXI: baseXI.map((p) => (p.isCaptain ? { ...p, multiplier: 3 } : p)),
+      bench: baseBench,
+      updatedAt: '',
+    }),
+    { played: 5, playing: 5, remaining: 3, total: 13, isBenchBoost: false, isTripleCaptain: true },
+  );
+
+  // 3. Bench Boost (bboost): 11 starters + 4 bench + 1 extra captain = 16
+  assert.deepEqual(
+    computeSquadPlayCounts({
+      entryId: '1',
+      event: 12,
+      activeChip: 'bboost',
+      eventPoints: 0,
+      totalPoints: null,
+      pointsOnBench: null,
+      rank: null,
+      startingXI: baseXI,
+      bench: baseBench,
+      updatedAt: '',
+    }),
+    { played: 6, playing: 5, remaining: 5, total: 16, isBenchBoost: true, isTripleCaptain: false },
+  );
+
+  // 4. Bench Boost + 3x multiplier edge case -> 17
+  assert.deepEqual(
+    computeSquadPlayCounts({
+      entryId: '1',
+      event: 12,
+      activeChip: 'bb',
+      eventPoints: 0,
+      totalPoints: null,
+      pointsOnBench: null,
+      rank: null,
+      startingXI: baseXI.map((p) => (p.isCaptain ? { ...p, multiplier: 3 } : p)),
+      bench: baseBench,
+      updatedAt: '',
+    }),
+    { played: 6, playing: 6, remaining: 5, total: 17, isBenchBoost: true, isTripleCaptain: false },
+  );
 });
 
 

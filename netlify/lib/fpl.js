@@ -182,7 +182,7 @@ export function buildPlayerPhotoCandidates(code, photo, meta = null) {
     }
   };
 
-  // 1. Local /custom-players/ folder FIRST
+  // 1. Local /custom-players/ folder FIRST (.png only)
   const primaryName = (webName || fullName).replace(/[\\/]/g, '').trim();
   if (primaryName) {
     const stems = [];
@@ -199,9 +199,7 @@ export function buildPlayerPhotoCandidates(code, photo, meta = null) {
     pushStem(normalized.toLowerCase());
 
     for (const stem of stems) {
-      for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
-        pushUnique(`/custom-players/${encodeURIComponent(stem)}${ext}`);
-      }
+      pushUnique(`/custom-players/${encodeURIComponent(stem)}.png`);
     }
   }
 
@@ -399,31 +397,58 @@ export function hasFixtureStarted(fixture, nowMs = Date.now()) {
   return false;
 }
 
+export function hasFixtureFinished(fixture) {
+  if (!fixture || typeof fixture !== 'object') {
+    return false;
+  }
+  return Boolean(fixture.finished === true || fixture.finished_provisional === true);
+}
+
 /**
- * Builds a map of FPL `teamId -> { started, opponentDisplay }` for a gameweek's fixtures.
- * Returns `null` when fixture payload is unavailable so callers can gracefully default to points.
+ * Builds a map of FPL `teamId -> { started, finished, fixtureStatus, opponentDisplay, opponentShortName, opponentTeamCode }`
+ * for a gameweek's fixtures. Returns `null` when fixture payload is unavailable.
  *
  * @param {any} fixturesPayload
  * @param {Map<number, string> | null | undefined} teamsById
  * @param {number} [nowMs]
- * @returns {Map<number, { started: boolean, opponentDisplay: string }> | null}
+ * @param {Map<number, number> | null | undefined} [teamCodesById]
+ * @returns {Map<number, {
+ *   started: boolean,
+ *   finished: boolean,
+ *   fixtureStatus: 'finished' | 'live' | 'upcoming',
+ *   opponentDisplay: string,
+ *   opponentShortName: string | null,
+ *   opponentTeamCode: number | null,
+ * }> | null}
  */
-export function buildTeamFixtureLookup(fixturesPayload, teamsById, nowMs = Date.now()) {
+export function buildTeamFixtureLookup(
+  fixturesPayload,
+  teamsById,
+  nowMs = Date.now(),
+  teamCodesById = null,
+) {
   if (!Array.isArray(fixturesPayload)) {
     return null;
   }
 
   const byTeam = new Map();
-  const pushTeamEntry = (teamId, started, label) => {
+  const pushTeamEntry = (teamId, started, finished, label, oppShort, oppCode) => {
     if (!Number.isFinite(teamId)) {
       return;
     }
     const existing = byTeam.get(teamId);
     if (!existing) {
-      byTeam.set(teamId, { started, labels: [label] });
+      byTeam.set(teamId, {
+        started,
+        finished,
+        labels: [label],
+        opponentShortName: oppShort || null,
+        opponentTeamCode: typeof oppCode === 'number' && Number.isFinite(oppCode) ? oppCode : null,
+      });
       return;
     }
     existing.started = existing.started || started;
+    existing.finished = existing.finished && finished;
     if (label && !existing.labels.includes(label)) {
       existing.labels.push(label);
     }
@@ -438,21 +463,33 @@ export function buildTeamFixtureLookup(fixturesPayload, teamsById, nowMs = Date.
     if (!Number.isFinite(teamH) || !Number.isFinite(teamA)) {
       continue;
     }
-    const started = hasFixtureStarted(fixture, nowMs);
+    const finished = hasFixtureFinished(fixture);
+    const started = finished || hasFixtureStarted(fixture, nowMs);
     const homeShort =
       (teamsById instanceof Map ? teamsById.get(teamH) : '') || `#${teamH}`;
     const awayShort =
       (teamsById instanceof Map ? teamsById.get(teamA) : '') || `#${teamA}`;
+    const homeCode = teamCodesById instanceof Map ? teamCodesById.get(teamH) ?? null : null;
+    const awayCode = teamCodesById instanceof Map ? teamCodesById.get(teamA) ?? null : null;
 
-    pushTeamEntry(teamH, started, `vs ${awayShort}`);
-    pushTeamEntry(teamA, started, `@ ${homeShort}`);
+    pushTeamEntry(teamH, started, finished, `${awayShort} (H)`, awayShort, awayCode);
+    pushTeamEntry(teamA, started, finished, `${homeShort} (A)`, homeShort, homeCode);
   }
 
   const result = new Map();
   for (const [teamId, entry] of byTeam.entries()) {
+    const fixtureStatus = entry.finished
+      ? 'finished'
+      : entry.started
+        ? 'live'
+        : 'upcoming';
     result.set(teamId, {
       started: entry.started,
+      finished: entry.finished,
+      fixtureStatus,
       opponentDisplay: entry.labels.join(', '),
+      opponentShortName: entry.opponentShortName,
+      opponentTeamCode: entry.opponentTeamCode,
     });
   }
   return result;
@@ -466,7 +503,14 @@ export function buildTeamFixtureLookup(fixturesPayload, teamsById, nowMs = Date.
  *   bootstrapMaps: any,
  *   livePointsMap?: Map<number, number> | null,
  *   liveStatsMap?: Map<number, { points: number, minutes: number }> | null,
- *   teamFixtureLookup?: Map<number, { started: boolean, opponentDisplay: string }> | null,
+ *   teamFixtureLookup?: Map<number, {
+ *     started: boolean,
+ *     finished?: boolean,
+ *     fixtureStatus?: 'finished' | 'live' | 'upcoming',
+ *     opponentDisplay: string,
+ *     opponentShortName?: string | null,
+ *     opponentTeamCode?: number | null,
+ *   }> | null,
  *   excelEventPoints?: number | null,
  * }} params
  */
@@ -524,14 +568,27 @@ export function assembleFplSquad({
           : [];
 
       let hasStarted = true;
+      let fixtureStatus = 'finished';
       let opponentDisplay = null;
+      let opponentShortName = null;
+      let opponentTeamCode = null;
       if (teamFixtureLookup instanceof Map) {
         const fixtureInfo = teamId !== null ? teamFixtureLookup.get(teamId) : null;
         if (fixtureInfo) {
           hasStarted = minutes > 0 || Boolean(fixtureInfo.started);
+          if (fixtureInfo.finished || fixtureInfo.fixtureStatus === 'finished') {
+            fixtureStatus = 'finished';
+          } else if (hasStarted) {
+            fixtureStatus = 'live';
+          } else {
+            fixtureStatus = 'upcoming';
+          }
           opponentDisplay = fixtureInfo.opponentDisplay || null;
+          opponentShortName = fixtureInfo.opponentShortName ?? null;
+          opponentTeamCode = fixtureInfo.opponentTeamCode ?? null;
         } else {
           hasStarted = minutes > 0;
+          fixtureStatus = hasStarted ? 'finished' : 'upcoming';
           opponentDisplay = 'BGW';
         }
       }
@@ -561,7 +618,10 @@ export function assembleFplSquad({
         isViceCaptain: Boolean(pick?.is_vice_captain),
         minutes,
         hasStarted,
+        fixtureStatus,
         opponentDisplay,
+        opponentShortName,
+        opponentTeamCode,
         rawPoints,
         points,
       };
@@ -807,6 +867,7 @@ export async function fetchFplSquadFromApi(entryId, event = DEFAULT_FPL_EVENT, f
     fixturesPayload,
     bootstrapMaps?.teamsById,
     nowMs,
+    bootstrapMaps?.teamCodesById,
   );
   const squad = assembleFplSquad({
     entryId: validEntryId,

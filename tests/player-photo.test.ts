@@ -90,7 +90,7 @@ test('normalizeSearchText and query builders normalize diacritics and build team
   );
 });
 
-test('Step 1: custom-players folder matches exact, case-insensitive, and accent-normalized web_name before any external request', async () => {
+test('Step 1: custom-players folder matches exact, case-insensitive, and accent-normalized .png web_name before any external request', async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'custom-players-test-'));
   try {
     const validPng = await sharp({
@@ -100,10 +100,12 @@ test('Step 1: custom-players folder matches exact, case-insensitive, and accent-
       .toBuffer();
 
     await fs.writeFile(path.join(tmpDir, 'Manzambi.png'), validPng);
-    await fs.writeFile(path.join(tmpDir, 'de cuyper.jpg'), new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0]));
-    await fs.writeFile(path.join(tmpDir, 'Odegaard.webp'), new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]));
+    await fs.writeFile(path.join(tmpDir, 'de cuyper.png'), validPng);
+    await fs.writeFile(path.join(tmpDir, 'Odegaard.png'), validPng);
+    await fs.writeFile(path.join(tmpDir, 'IgnoredJpg.jpg'), new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0]));
+    await fs.writeFile(path.join(tmpDir, 'IgnoredWebp.webp'), new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]));
 
-    // Exact match
+    // Exact .png match
     const exact = await findCustomPlayerPhotoAsset({
       webName: 'Manzambi',
       customPlayersDirs: [tmpDir],
@@ -112,21 +114,34 @@ test('Step 1: custom-players folder matches exact, case-insensitive, and accent-
     assert.equal(exact.source, 'custom-folder');
     assert.equal(exact.contentType, 'image/png');
 
-    // Case-insensitive match
+    // Case-insensitive .png match
     const ci = await findCustomPlayerPhotoAsset({
       webName: 'De Cuyper',
       customPlayersDirs: [tmpDir],
     });
     assert.ok(ci);
-    assert.equal(ci.contentType, 'image/jpeg');
+    assert.equal(ci.contentType, 'image/png');
 
-    // Accent/diacritic-normalized match
+    // Accent/diacritic-normalized .png match
     const norm = await findCustomPlayerPhotoAsset({
       webName: 'Ødegaard',
       customPlayersDirs: [tmpDir],
     });
     assert.ok(norm);
-    assert.equal(norm.contentType, 'image/webp');
+    assert.equal(norm.contentType, 'image/png');
+
+    // Non-.png files (.jpg, .webp) are ignored in /custom-players/
+    const ignoredJpg = await findCustomPlayerPhotoAsset({
+      webName: 'IgnoredJpg',
+      customPlayersDirs: [tmpDir],
+    });
+    assert.equal(ignoredJpg, null);
+
+    const ignoredWebp = await findCustomPlayerPhotoAsset({
+      webName: 'IgnoredWebp',
+      customPlayersDirs: [tmpDir],
+    });
+    assert.equal(ignoredWebp, null);
 
     // Ensure fetchPlayerPhotoAsset checks Step 1 BEFORE any external request even when code is present
     let externalFetchCalled = false;

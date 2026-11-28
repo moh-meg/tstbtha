@@ -3,6 +3,7 @@ import type {
   FplSquadData,
   FplSquadErrorCode,
   FplSquadFetchResult,
+  FplSquadPlayCounts,
   FplSquadPlayer,
   MatchItem,
   MatchStatus,
@@ -665,11 +666,16 @@ export interface FplLivePlayerStats {
 
 export interface FplTeamFixtureStatus {
   started: boolean;
+  finished?: boolean;
+  fixtureStatus?: 'finished' | 'live' | 'upcoming';
   opponentDisplay: string;
+  opponentShortName?: string | null;
+  opponentTeamCode?: number | null;
 }
 
 let cachedBootstrapElements: Map<number, BootstrapElementLookup> | null = null;
 let cachedBootstrapTeamsById: Map<number, string> | null = null;
+let cachedBootstrapTeamCodesById: Map<number, number> | null = null;
 const cachedEventLiveStats = new Map<number, Map<number, FplLivePlayerStats>>();
 const cachedEventFixtures = new Map<number, unknown[]>();
 const cachedClientSquads = new Map<string, { squad: FplSquadData; cachedAt: number }>();
@@ -677,6 +683,7 @@ const cachedClientSquads = new Map<string, { squad: FplSquadData; cachedAt: numb
 export function resetFplClientCachesForTests(): void {
   cachedBootstrapElements = null;
   cachedBootstrapTeamsById = null;
+  cachedBootstrapTeamCodesById = null;
   cachedEventLiveStats.clear();
   cachedEventFixtures.clear();
   cachedClientSquads.clear();
@@ -806,11 +813,9 @@ export function buildCustomPlayerPhotoCandidates(meta?: PlayerPhotoCandidateMeta
 
   const candidates: string[] = [];
   for (const stem of stems) {
-    for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
-      const path = `/custom-players/${encodeURIComponent(stem)}${ext}`;
-      if (!candidates.includes(path)) {
-        candidates.push(path);
-      }
+    const path = `/custom-players/${encodeURIComponent(stem)}.png`;
+    if (!candidates.includes(path)) {
+      candidates.push(path);
     }
   }
 
@@ -849,7 +854,7 @@ export function buildFplPlayerPhotoCandidates(
     }
   };
 
-  // 1. Local custom-players folder FIRST (exact, case-insensitive, accent-normalized across .png/.jpg/.jpeg/.webp)
+  // 1. Local custom-players folder FIRST (.png only: exact, case-insensitive, accent-normalized)
   for (const customUrl of buildCustomPlayerPhotoCandidates({
     fullName,
     webName,
@@ -926,7 +931,7 @@ export function resolvePlayerHeadshotCandidates(input: HeadshotCandidateInput): 
       return;
     }
     if (trimmed.startsWith('/custom-players/')) {
-      if (!customUrls.includes(trimmed)) {
+      if (/\.png(?:[?#].*)?$/i.test(trimmed) && !customUrls.includes(trimmed)) {
         customUrls.push(trimmed);
       }
       return;
@@ -1283,6 +1288,35 @@ export function buildFplLivePointsMapClient(rawLive: unknown): Map<number, numbe
   return pointsById;
 }
 
+export function buildFplTeamCodeMapClient(rawBootstrap: unknown): Map<number, number> {
+  const teamCodesById = new Map<number, number>();
+  if (!isRecord(rawBootstrap) || !Array.isArray(rawBootstrap.teams)) {
+    return teamCodesById;
+  }
+  for (const team of rawBootstrap.teams) {
+    if (
+      isRecord(team) &&
+      typeof team.id === 'number' &&
+      typeof team.code === 'number' &&
+      Number.isFinite(team.code)
+    ) {
+      teamCodesById.set(team.id, team.code);
+    }
+  }
+  return teamCodesById;
+}
+
+export function buildTeamBadgeUrls(teamCode?: number | null): string[] {
+  if (typeof teamCode !== 'number' || !Number.isFinite(teamCode) || teamCode <= 0) {
+    return [];
+  }
+  const cleanCode = Math.trunc(teamCode);
+  return [
+    `https://resources.premierleague.com/premierleague/badges/70/t${cleanCode}.png`,
+    `https://resources.premierleague.com/premierleague/badges/t${cleanCode}.png`,
+  ];
+}
+
 export function hasFplFixtureStarted(fixture: unknown, nowMs: number = Date.now()): boolean {
   if (!isRecord(fixture)) {
     return false;
@@ -1303,26 +1337,57 @@ export function hasFplFixtureStarted(fixture: unknown, nowMs: number = Date.now(
   return false;
 }
 
+export function hasFplFixtureFinished(fixture: unknown): boolean {
+  if (!isRecord(fixture)) {
+    return false;
+  }
+  return Boolean(fixture.finished === true || fixture.finished_provisional === true);
+}
+
 export function buildTeamFixtureLookupClient(
   rawFixtures: unknown,
   teamsById: ReadonlyMap<number, string> | null | undefined,
   nowMs: number = Date.now(),
+  teamCodesById: ReadonlyMap<number, number> | null | undefined = null,
 ): Map<number, FplTeamFixtureStatus> | null {
   if (!Array.isArray(rawFixtures)) {
     return null;
   }
 
-  const byTeam = new Map<number, { started: boolean; labels: string[] }>();
-  const pushTeamEntry = (teamId: number, started: boolean, label: string) => {
+  const byTeam = new Map<
+    number,
+    {
+      started: boolean;
+      finished: boolean;
+      labels: string[];
+      opponentShortName: string | null;
+      opponentTeamCode: number | null;
+    }
+  >();
+  const pushTeamEntry = (
+    teamId: number,
+    started: boolean,
+    finished: boolean,
+    label: string,
+    oppShort: string,
+    oppCode: number | null,
+  ) => {
     if (!Number.isFinite(teamId)) {
       return;
     }
     const existing = byTeam.get(teamId);
     if (!existing) {
-      byTeam.set(teamId, { started, labels: [label] });
+      byTeam.set(teamId, {
+        started,
+        finished,
+        labels: [label],
+        opponentShortName: oppShort || null,
+        opponentTeamCode: typeof oppCode === 'number' && Number.isFinite(oppCode) ? oppCode : null,
+      });
       return;
     }
     existing.started = existing.started || started;
+    existing.finished = existing.finished && finished;
     if (label && !existing.labels.includes(label)) {
       existing.labels.push(label);
     }
@@ -1337,22 +1402,98 @@ export function buildTeamFixtureLookupClient(
     if (!Number.isFinite(teamH) || !Number.isFinite(teamA)) {
       continue;
     }
-    const started = hasFplFixtureStarted(fixture, nowMs);
+    const finished = hasFplFixtureFinished(fixture);
+    const started = finished || hasFplFixtureStarted(fixture, nowMs);
     const homeShort = (teamsById ? teamsById.get(teamH) : '') || `#${teamH}`;
     const awayShort = (teamsById ? teamsById.get(teamA) : '') || `#${teamA}`;
+    const homeCode = teamCodesById ? teamCodesById.get(teamH) ?? null : null;
+    const awayCode = teamCodesById ? teamCodesById.get(teamA) ?? null : null;
 
-    pushTeamEntry(teamH, started, `vs ${awayShort}`);
-    pushTeamEntry(teamA, started, `@ ${homeShort}`);
+    pushTeamEntry(teamH, started, finished, `${awayShort} (H)`, awayShort, awayCode);
+    pushTeamEntry(teamA, started, finished, `${homeShort} (A)`, homeShort, homeCode);
   }
 
   const result = new Map<number, FplTeamFixtureStatus>();
   for (const [teamId, entry] of byTeam.entries()) {
+    const fixtureStatus: 'finished' | 'live' | 'upcoming' = entry.finished
+      ? 'finished'
+      : entry.started
+        ? 'live'
+        : 'upcoming';
     result.set(teamId, {
       started: entry.started,
+      finished: entry.finished,
+      fixtureStatus,
       opponentDisplay: entry.labels.join(', '),
+      opponentShortName: entry.opponentShortName,
+      opponentTeamCode: entry.opponentTeamCode,
     });
   }
   return result;
+}
+
+export function computeSquadPlayCounts(squad: FplSquadData | null | undefined): FplSquadPlayCounts {
+  if (!squad) {
+    return {
+      played: 0,
+      playing: 0,
+      remaining: 0,
+      total: 0,
+      isBenchBoost: false,
+      isTripleCaptain: false,
+    };
+  }
+
+  const normalizedChip = (squad.activeChip ?? '').trim().toLowerCase();
+  const isBenchBoost = normalizedChip === 'bboost' || normalizedChip === 'bb';
+  const isTripleCaptain = normalizedChip === '3xc' || normalizedChip === 'tc';
+  const pool = isBenchBoost ? [...squad.startingXI, ...squad.bench] : squad.startingXI;
+  const hasExplicitCaptain = pool.some((p) => p.isCaptain);
+
+  let played = 0;
+  let playing = 0;
+  let remaining = 0;
+  let total = 0;
+
+  for (const player of pool) {
+    let weight = 1;
+    if (hasExplicitCaptain) {
+      if (player.isCaptain) {
+        weight = isTripleCaptain || player.multiplier >= 3 ? 3 : 2;
+      }
+    } else if (player.multiplier >= 3) {
+      weight = 3;
+    } else if (player.multiplier === 2) {
+      weight = 2;
+    }
+
+    const status =
+      player.fixtureStatus === 'finished' ||
+      player.fixtureStatus === 'live' ||
+      player.fixtureStatus === 'upcoming'
+        ? player.fixtureStatus
+        : player.hasStarted === false
+          ? 'upcoming'
+          : 'finished';
+
+    if (status === 'finished') {
+      played += weight;
+    } else if (status === 'live') {
+      playing += weight;
+    } else {
+      remaining += weight;
+    }
+    total += weight;
+  }
+
+  return {
+    played,
+    playing,
+    remaining,
+    total,
+    isBenchBoost,
+    isTripleCaptain,
+  };
 }
 
 export interface ExcelPointsContext {
@@ -1487,14 +1628,27 @@ export function assembleFplSquadClient(
             : [];
 
       let hasStarted = true;
+      let fixtureStatus: 'finished' | 'live' | 'upcoming' = 'finished';
       let opponentDisplay: string | null = null;
+      let opponentShortName: string | null = null;
+      let opponentTeamCode: number | null = null;
       if (teamFixtureLookup instanceof Map) {
         const fixtureInfo = teamId !== null ? teamFixtureLookup.get(teamId) : null;
         if (fixtureInfo) {
           hasStarted = minutes > 0 || Boolean(fixtureInfo.started);
+          if (fixtureInfo.finished || fixtureInfo.fixtureStatus === 'finished') {
+            fixtureStatus = 'finished';
+          } else if (hasStarted) {
+            fixtureStatus = 'live';
+          } else {
+            fixtureStatus = 'upcoming';
+          }
           opponentDisplay = fixtureInfo.opponentDisplay || null;
+          opponentShortName = fixtureInfo.opponentShortName ?? null;
+          opponentTeamCode = fixtureInfo.opponentTeamCode ?? null;
         } else {
           hasStarted = minutes > 0;
+          fixtureStatus = hasStarted ? 'finished' : 'upcoming';
           opponentDisplay = 'BGW';
         }
       }
@@ -1524,7 +1678,10 @@ export function assembleFplSquadClient(
         isViceCaptain: Boolean(pick.is_vice_captain),
         minutes,
         hasStarted,
+        fixtureStatus,
         opponentDisplay,
+        opponentShortName,
+        opponentTeamCode,
         rawPoints,
         points,
       };
@@ -1657,9 +1814,25 @@ function normalizeSquadPlayerFromApi(raw: unknown): FplSquadPlayer | null {
   const teamId = typeof raw.teamId === 'number' && Number.isFinite(raw.teamId) ? raw.teamId : null;
   const minutes = typeof raw.minutes === 'number' && Number.isFinite(raw.minutes) ? raw.minutes : 0;
   const hasStarted = typeof raw.hasStarted === 'boolean' ? raw.hasStarted : true;
+  const fixtureStatus =
+    raw.fixtureStatus === 'finished' ||
+    raw.fixtureStatus === 'live' ||
+    raw.fixtureStatus === 'upcoming'
+      ? raw.fixtureStatus
+      : hasStarted
+        ? 'finished'
+        : 'upcoming';
   const opponentDisplay =
     typeof raw.opponentDisplay === 'string' && raw.opponentDisplay.trim()
       ? raw.opponentDisplay.trim()
+      : null;
+  const opponentShortName =
+    typeof raw.opponentShortName === 'string' && raw.opponentShortName.trim()
+      ? raw.opponentShortName.trim()
+      : null;
+  const opponentTeamCode =
+    typeof raw.opponentTeamCode === 'number' && Number.isFinite(raw.opponentTeamCode)
+      ? raw.opponentTeamCode
       : null;
 
   return {
@@ -1688,7 +1861,10 @@ function normalizeSquadPlayerFromApi(raw: unknown): FplSquadPlayer | null {
     isViceCaptain: Boolean(raw.isViceCaptain),
     minutes,
     hasStarted,
+    fixtureStatus,
     opponentDisplay,
+    opponentShortName,
+    opponentTeamCode,
     rawPoints: rawPoints ?? points,
     points,
   };
@@ -1748,16 +1924,16 @@ export function normalizeFplSquadResponse(raw: unknown): FplSquadData | null {
 
 const PREVIEW_SAMPLE_BOOTSTRAP_PAYLOAD = {
   teams: [
-    { id: 1, short_name: 'ARS', name: 'Arsenal' },
-    { id: 2, short_name: 'AVL', name: 'Aston Villa' },
-    { id: 5, short_name: 'BRE', name: 'Brentford' },
-    { id: 7, short_name: 'CHE', name: 'Chelsea' },
-    { id: 8, short_name: 'CRY', name: 'Crystal Palace' },
-    { id: 10, short_name: 'FUL', name: 'Fulham' },
-    { id: 13, short_name: 'MCI', name: 'Man City' },
-    { id: 14, short_name: 'MUN', name: 'Man Utd' },
-    { id: 15, short_name: 'NEW', name: 'Newcastle' },
-    { id: 20, short_name: 'WOL', name: 'Wolves' },
+    { id: 1, code: 3, short_name: 'ARS', name: 'Arsenal' },
+    { id: 2, code: 7, short_name: 'AVL', name: 'Aston Villa' },
+    { id: 5, code: 94, short_name: 'BRE', name: 'Brentford' },
+    { id: 7, code: 8, short_name: 'CHE', name: 'Chelsea' },
+    { id: 8, code: 31, short_name: 'CRY', name: 'Crystal Palace' },
+    { id: 10, code: 54, short_name: 'FUL', name: 'Fulham' },
+    { id: 13, code: 43, short_name: 'MCI', name: 'Man City' },
+    { id: 14, code: 1, short_name: 'MUN', name: 'Man Utd' },
+    { id: 15, code: 4, short_name: 'NEW', name: 'Newcastle' },
+    { id: 20, code: 39, short_name: 'WOL', name: 'Wolves' },
   ],
   elements: [
     { id: 1, code: 154561, photo: '154561.jpg', first_name: 'David', second_name: 'Raya', web_name: 'Raya', element_type: 1, team: 1 },
@@ -1780,6 +1956,7 @@ const PREVIEW_SAMPLE_BOOTSTRAP_PAYLOAD = {
 
 const PREVIEW_SAMPLE_BOOTSTRAP = buildFplBootstrapLookupClient(PREVIEW_SAMPLE_BOOTSTRAP_PAYLOAD);
 const PREVIEW_SAMPLE_TEAMS = buildFplTeamShortMapClient(PREVIEW_SAMPLE_BOOTSTRAP_PAYLOAD);
+const PREVIEW_SAMPLE_TEAM_CODES = buildFplTeamCodeMapClient(PREVIEW_SAMPLE_BOOTSTRAP_PAYLOAD);
 
 const PREVIEW_SAMPLE_LIVE_STATS = new Map<number, FplLivePlayerStats>([
   [1, { points: 6, minutes: 90 }],
@@ -1802,13 +1979,14 @@ const PREVIEW_SAMPLE_LIVE_STATS = new Map<number, FplLivePlayerStats>([
 const PREVIEW_SAMPLE_FIXTURE_LOOKUP = buildTeamFixtureLookupClient(
   [
     { team_h: 1, team_a: 8, started: true, finished: true, kickoff_time: '2025-11-22T15:00:00Z' },
-    { team_h: 13, team_a: 15, started: true, finished: true, kickoff_time: '2025-11-22T17:30:00Z' },
+    { team_h: 13, team_a: 15, started: true, finished: false, finished_provisional: false, kickoff_time: '2025-11-22T17:30:00Z' },
     { team_h: 14, team_a: 5, started: true, finished: true, kickoff_time: '2025-11-22T15:00:00Z' },
     { team_h: 10, team_a: 20, started: true, finished: true, kickoff_time: '2025-11-22T15:00:00Z' },
     { team_h: 7, team_a: 2, started: false, finished: false, kickoff_time: '2099-11-29T16:30:00Z' },
   ],
   PREVIEW_SAMPLE_TEAMS,
   Date.parse('2026-01-01T00:00:00Z'),
+  PREVIEW_SAMPLE_TEAM_CODES,
 );
 
 const PREVIEW_SAMPLE_ENTRY_122_PICKS = {
@@ -2003,11 +2181,13 @@ export async function fetchFplSquadData(
       const bootstrapPromise: Promise<{
         lookup: Map<number, BootstrapElementLookup>;
         teamsById: Map<number, string>;
+        teamCodesById: Map<number, number>;
       }> =
-        cachedBootstrapElements && cachedBootstrapTeamsById
+        cachedBootstrapElements && cachedBootstrapTeamsById && cachedBootstrapTeamCodesById
           ? Promise.resolve({
               lookup: cachedBootstrapElements,
               teamsById: cachedBootstrapTeamsById,
+              teamCodesById: cachedBootstrapTeamCodesById,
             })
           : fetcher(`${FPL_API_BASE}/bootstrap-static/`, {
               headers: { Accept: 'application/json' },
@@ -2017,6 +2197,7 @@ export async function fetchFplSquadData(
                   return {
                     lookup: new Map<number, BootstrapElementLookup>(),
                     teamsById: new Map<number, string>(),
+                    teamCodesById: new Map<number, number>(),
                   };
                 }
                 const bsPayload =
@@ -2027,13 +2208,16 @@ export async function fetchFplSquadData(
                       : null;
                 const lookup = buildFplBootstrapLookupClient(bsPayload);
                 const teamsById = buildFplTeamShortMapClient(bsPayload);
+                const teamCodesById = buildFplTeamCodeMapClient(bsPayload);
                 cachedBootstrapElements = lookup;
                 cachedBootstrapTeamsById = teamsById;
-                return { lookup, teamsById };
+                cachedBootstrapTeamCodesById = teamCodesById;
+                return { lookup, teamsById, teamCodesById };
               })
               .catch(() => ({
                 lookup: new Map<number, BootstrapElementLookup>(),
                 teamsById: new Map<number, string>(),
+                teamCodesById: new Map<number, number>(),
               }));
 
       const livePromise = cachedEventLiveStats.has(event)
@@ -2076,10 +2260,15 @@ export async function fetchFplSquadData(
             })
             .catch(() => null);
 
-      const [{ lookup: bootstrapLookup, teamsById }, liveStatsMap, rawFixtures] =
+      const [{ lookup: bootstrapLookup, teamsById, teamCodesById }, liveStatsMap, rawFixtures] =
         await Promise.all([bootstrapPromise, livePromise, fixturesPromise]);
 
-      const teamFixtureLookup = buildTeamFixtureLookupClient(rawFixtures, teamsById);
+      const teamFixtureLookup = buildTeamFixtureLookupClient(
+        rawFixtures,
+        teamsById,
+        Date.now(),
+        teamCodesById,
+      );
 
       const managerExcelPoints = resolveExcelManagerPoints({
         entryId,

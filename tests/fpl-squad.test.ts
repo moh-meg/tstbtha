@@ -52,13 +52,7 @@ test('buildPlayerPhotoCandidates and resolvePlayerPhotoUrl prioritize local /cus
     }),
     [
       '/custom-players/Haaland.png',
-      '/custom-players/Haaland.jpg',
-      '/custom-players/Haaland.jpeg',
-      '/custom-players/Haaland.webp',
       '/custom-players/haaland.png',
-      '/custom-players/haaland.jpg',
-      '/custom-players/haaland.jpeg',
-      '/custom-players/haaland.webp',
       'https://resources.premierleague.com/premierleague/photos/players/250x250/p223094.png',
       'https://resources.premierleague.com/premierleague/photos/players/250x250/p654321.png',
       '/.netlify/functions/player-photo?code=223094&photoCode=654321&name=Erling%20Haaland&webName=Haaland&firstName=Erling&secondName=Haaland&team=Man%20City&teamCode=43',
@@ -79,13 +73,7 @@ test('buildPlayerPhotoCandidates and resolvePlayerPhotoUrl prioritize local /cus
     }),
     [
       '/custom-players/Signing.png',
-      '/custom-players/Signing.jpg',
-      '/custom-players/Signing.jpeg',
-      '/custom-players/Signing.webp',
       '/custom-players/signing.png',
-      '/custom-players/signing.jpg',
-      '/custom-players/signing.jpeg',
-      '/custom-players/signing.webp',
       '/.netlify/functions/player-photo?name=New%20Signing&webName=Signing&firstName=New&secondName=Signing&team=Arsenal&teamCode=3',
     ],
   );
@@ -171,13 +159,7 @@ test('assembleFplSquad maps picks + bootstrap-static + live GW12 player points w
   );
   assert.deepEqual(squad.startingXI[1].photoUrls, [
     '/custom-players/M.Salah.png',
-    '/custom-players/M.Salah.jpg',
-    '/custom-players/M.Salah.jpeg',
-    '/custom-players/M.Salah.webp',
     '/custom-players/m.salah.png',
-    '/custom-players/m.salah.jpg',
-    '/custom-players/m.salah.jpeg',
-    '/custom-players/m.salah.webp',
     'https://resources.premierleague.com/premierleague/photos/players/250x250/p118748.png',
     '/.netlify/functions/player-photo?code=118748&name=Mohamed%20Salah&webName=M.Salah&firstName=Mohamed&secondName=Salah&team=Liverpool&teamCode=14',
   ]);
@@ -195,13 +177,7 @@ test('assembleFplSquad maps picks + bootstrap-static + live GW12 player points w
   );
   assert.deepEqual(squad.bench[1].photoUrls, [
     '/custom-players/Mystery.png',
-    '/custom-players/Mystery.jpg',
-    '/custom-players/Mystery.jpeg',
-    '/custom-players/Mystery.webp',
     '/custom-players/mystery.png',
-    '/custom-players/mystery.jpg',
-    '/custom-players/mystery.jpeg',
-    '/custom-players/mystery.webp',
     '/.netlify/functions/player-photo?name=James%20Garner&webName=Mystery&firstName=James&secondName=Garner&team=Arsenal&teamCode=3',
   ]);
 });
@@ -289,14 +265,15 @@ test('assembleFplSquad marks started/played players for points and unplayed play
   const nowMs = Date.parse('2026-11-28T15:00:00Z');
   const teamFixtureLookup = buildTeamFixtureLookup(
     [
-      // ARS home vs CHE unstarted in flag, EXCEPT Salah's minutes > 0 overrides; CHE & ARS kickoff future
+      // CHE home vs LIV unstarted in flag, EXCEPT Salah's minutes > 0 overrides
       { team_h: 7, team_a: 12, started: false, finished: false, kickoff_time: '2026-11-29T16:30:00Z' },
-      // ARS kickoff already in past -> started even if minutes=0 or flag=false
+      // ARS finished
       { team_h: 1, team_a: 2, started: true, finished: true, kickoff_time: '2026-11-28T12:30:00Z' },
       // WHU (19) omitted -> Blank Gameweek (BGW)
     ],
     bootstrapMaps.teamsById,
     nowMs,
+    bootstrapMaps.teamCodesById,
   );
 
   const squad = assembleFplSquad({
@@ -317,18 +294,25 @@ test('assembleFplSquad marks started/played players for points and unplayed play
   });
 
   assert.equal(squad.eventPoints, 19);
-  // Raya: started fixture + 90 mins -> show 6 pts
+  // Raya: finished fixture + 90 mins -> show 6 pts
   assert.equal(squad.startingXI[0].hasStarted, true);
+  assert.equal(squad.startingXI[0].fixtureStatus, 'finished');
   assert.equal(squad.startingXI[0].points, 6);
-  // Palmer (CHE home vs LIV): unstarted + 0 mins -> show vs LIV
+  // Palmer (CHE home vs LIV): unstarted + 0 mins -> show LIV (H) + LIV teamCode 14
   assert.equal(squad.startingXI[1].hasStarted, false);
-  assert.equal(squad.startingXI[1].opponentDisplay, 'vs LIV');
-  // Salah (LIV away @ CHE): minutes=12 > 0 -> started -> show 2 pts
+  assert.equal(squad.startingXI[1].fixtureStatus, 'upcoming');
+  assert.equal(squad.startingXI[1].opponentDisplay, 'LIV (H)');
+  assert.equal(squad.startingXI[1].opponentShortName, 'LIV');
+  assert.equal(squad.startingXI[1].opponentTeamCode, 14);
+  // Salah (LIV away @ CHE): minutes=12 > 0 -> started & live -> show 2 pts
   assert.equal(squad.startingXI[2].hasStarted, true);
+  assert.equal(squad.startingXI[2].fixtureStatus, 'live');
   assert.equal(squad.startingXI[2].points, 2);
-  assert.equal(squad.startingXI[2].opponentDisplay, '@ CHE');
+  assert.equal(squad.startingXI[2].opponentDisplay, 'CHE (A)');
+  assert.equal(squad.startingXI[2].opponentTeamCode, 8);
   // Bowen (WHU): no fixture in GW12 -> BGW
   assert.equal(squad.bench[0].hasStarted, false);
+  assert.equal(squad.bench[0].fixtureStatus, 'upcoming');
   assert.equal(squad.bench[0].opponentDisplay, 'BGW');
   // Null fixtures payload gracefully defaults to null lookup & shows points
   assert.equal(buildTeamFixtureLookup(null, bootstrapMaps.teamsById), null);

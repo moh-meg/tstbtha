@@ -67,9 +67,21 @@ export interface FplSquadPlayer {
   isViceCaptain: boolean;
   minutes?: number;
   hasStarted?: boolean;
+  fixtureStatus?: 'finished' | 'live' | 'upcoming';
   opponentDisplay?: string | null;
+  opponentShortName?: string | null;
+  opponentTeamCode?: number | null;
   rawPoints?: number | null;
   points: number | null;
+}
+
+export interface FplSquadPlayCounts {
+  played: number;
+  playing: number;
+  remaining: number;
+  total: number;
+  isBenchBoost: boolean;
+  isTripleCaptain: boolean;
 }
 
 export interface FplSquadData {

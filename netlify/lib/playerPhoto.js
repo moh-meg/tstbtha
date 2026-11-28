@@ -17,12 +17,9 @@ const THESPORTSDB_SEARCH_BASE =
 const WIKIPEDIA_API_BASE = 'https://en.wikipedia.org/w/api.php';
 const REMOVE_BG_API_URL = 'https://api.remove.bg/v1.0/removebg';
 
-const CUSTOM_PLAYER_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp'];
+const CUSTOM_PLAYER_EXTENSIONS = ['.png'];
 const CUSTOM_EXTENSION_CONTENT_TYPES = {
   '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
 };
 
 const UPSTREAM_IMAGE_HEADERS = {
@@ -347,8 +344,8 @@ export function getDefaultCustomPlayersDirectories() {
 
 /**
  * Step 1: Look in `public/custom-players/` (or `client/public/custom-players/`)
- * for a file matching the player's displayed squad name (`web_name`).
- * Priority: exact > case-insensitive > accent/diacritic-normalized across .png, .jpg, .jpeg, .webp.
+ * for a `.png` file matching the player's displayed squad name (`web_name`).
+ * Priority: exact > case-insensitive > accent/diacritic-normalized (.png only).
  * @param {{
  *   webName?: string | null,
  *   name?: string | null,

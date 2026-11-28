@@ -4,6 +4,8 @@ import { AnimatePresence, motion } from 'motion/react';
 import type { FplSquadData, FplSquadPlayer, PlayerItem } from '../types/match';
 import {
   DEFAULT_FPL_EVENT,
+  buildTeamBadgeUrls,
+  computeSquadPlayCounts,
   fetchFplSquadData,
   getClubKitColors,
   getNextHeadshotCandidateIndex,
@@ -181,6 +183,61 @@ function PlayerHeadshot({
   );
 }
 
+function OpponentBadge({
+  opponentShortName,
+  opponentTeamCode,
+}: {
+  opponentShortName?: string | null;
+  opponentTeamCode?: number | null;
+}) {
+  const badgeUrls = buildTeamBadgeUrls(opponentTeamCode);
+  const badgeKey = badgeUrls.join('|');
+  const [badgeIdx, setBadgeIdx] = useState(0);
+
+  useEffect(() => {
+    setBadgeIdx(0);
+  }, [badgeKey]);
+
+  const activeBadgeSrc = badgeUrls[badgeIdx] ?? '';
+  if (!activeBadgeSrc) {
+    const kit = getClubKitColors(opponentShortName, undefined, opponentTeamCode);
+    const shortTag = (opponentShortName || '?').slice(0, 3).toUpperCase();
+    return (
+      <span
+        aria-hidden="true"
+        data-testid="fpl-opponent-badge-fallback"
+        className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border text-[6px] font-black leading-none"
+        style={{
+          backgroundColor: kit.primary,
+          borderColor: kit.secondary,
+          color: kit.text,
+        }}
+      >
+        {shortTag.slice(0, 1)}
+      </span>
+    );
+  }
+
+  return (
+    <img
+      key={activeBadgeSrc}
+      src={activeBadgeSrc}
+      alt={opponentShortName ? `${opponentShortName} badge` : 'Opponent badge'}
+      data-testid="fpl-opponent-badge"
+      referrerPolicy="no-referrer"
+      loading="eager"
+      decoding="async"
+      onError={(event) => {
+        if (event.currentTarget.getAttribute('src') !== activeBadgeSrc) {
+          return;
+        }
+        setBadgeIdx((idx) => idx + 1);
+      }}
+      className="h-3.5 w-3.5 shrink-0 object-contain"
+    />
+  );
+}
+
 function PitchPlayerTile({
   player,
   variant = 'pitch',
@@ -196,7 +253,7 @@ function PitchPlayerTile({
     typeof player.opponentDisplay === 'string' && player.opponentDisplay.trim()
       ? player.opponentDisplay.trim()
       : 'BGW';
-  const subLabel = hasStarted ? `${displayPoints} pts` : opponentLabel;
+  const isBlankGameweek = !hasStarted && opponentLabel === 'BGW';
 
   return (
     <div
@@ -247,16 +304,31 @@ function PitchPlayerTile({
         <p className="truncate text-[10px] sm:text-[11px] font-bold leading-tight">
           {player.webName}
         </p>
-        <p
-          dir="ltr"
-          data-testid="fpl-player-points"
-          data-started={hasStarted ? 'true' : 'false'}
-          className={`mt-0.5 truncate text-[10px] font-extrabold tracking-wide tabular-nums ${
-            hasStarted ? 'text-[#FFD60A]' : 'text-[#7DD3FC]'
-          }`}
-        >
-          {subLabel}
-        </p>
+        {hasStarted ? (
+          <p
+            dir="ltr"
+            data-testid="fpl-player-points"
+            data-started="true"
+            className="mt-0.5 truncate text-[10px] font-extrabold tracking-wide text-[#FFD60A] tabular-nums"
+          >
+            {displayPoints} pts
+          </p>
+        ) : (
+          <div
+            dir="ltr"
+            data-testid="fpl-player-points"
+            data-started="false"
+            className="mt-0.5 flex items-center justify-center gap-1 text-[9.5px] sm:text-[10px] font-extrabold tracking-tight text-[#7DD3FC] tabular-nums"
+          >
+            {!isBlankGameweek && (
+              <OpponentBadge
+                opponentShortName={player.opponentShortName}
+                opponentTeamCode={player.opponentTeamCode}
+              />
+            )}
+            <span className="truncate">{opponentLabel}</span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -347,6 +419,7 @@ export function FplSquadModal({ player, players = [], onClose }: FplSquadModalPr
   const midRow = squad?.startingXI.filter((p) => p.elementType === 3) ?? [];
   const fwdRow = squad?.startingXI.filter((p) => p.elementType === 4) ?? [];
   const formationRows = [gkRow, defRow, midRow, fwdRow].filter((row) => row.length > 0);
+  const playCounts = squad ? computeSquadPlayCounts(squad) : null;
 
   return (
     <AnimatePresence>
@@ -392,23 +465,49 @@ export function FplSquadModal({ player, players = [], onClose }: FplSquadModalPr
                 >
                   {player.playerName}
                 </h2>
-                <p
+                <div
                   dir="ltr"
-                  className="mt-0.5 flex flex-wrap items-center justify-end gap-x-2 text-xs font-semibold text-white/85 tabular-nums"
+                  className="mt-1 flex flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs font-semibold text-white/85 tabular-nums"
                 >
-                  <span>ID : {player.playerId}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>GW {squad?.event ?? DEFAULT_FPL_EVENT}</span>
-                  <span aria-hidden="true">·</span>
-                  <span data-testid="fpl-header-points" className="font-bold text-[#FFD60A]">
-                    {resolveExcelManagerPoints({
-                      entryId: player.playerId,
-                      selectedPlayer: player,
-                      players,
-                    })}{' '}
-                    pts
+                  <span className="inline-flex flex-wrap items-center justify-end gap-x-2 gap-y-1">
+                    <span className="whitespace-nowrap">ID : {player.playerId}</span>
+                    {playCounts && playCounts.total > 0 && (
+                      <span
+                        data-testid="fpl-header-counts"
+                        className="inline-flex items-center gap-1.5 whitespace-nowrap rounded bg-[#001E70]/80 px-2 py-0.5 text-[11px] font-bold text-white ring-1 ring-white/15"
+                      >
+                        <span className="text-[#6EE7B7]">Played {playCounts.played}</span>
+                        <span aria-hidden="true" className="text-white/40">·</span>
+                        <span className="text-[#FDE047]">Live {playCounts.playing}</span>
+                        <span aria-hidden="true" className="text-white/40">·</span>
+                        <span className="text-[#BAE6FD]">Left {playCounts.remaining}</span>
+                        <span className="text-white/95">/{playCounts.total}</span>
+                        {(playCounts.isBenchBoost || playCounts.isTripleCaptain) && (
+                          <span className="ml-0.5 rounded-sm bg-[#FFD60A] px-1 py-px text-[9px] font-black text-[#0F0F12] leading-none">
+                            {playCounts.isBenchBoost && playCounts.isTripleCaptain
+                              ? 'BB+TC'
+                              : playCounts.isBenchBoost
+                                ? 'BB'
+                                : 'TC'}
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </span>
-                </p>
+                  <span aria-hidden="true" className="hidden sm:inline">·</span>
+                  <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                    <span>GW {squad?.event ?? DEFAULT_FPL_EVENT}</span>
+                    <span aria-hidden="true">·</span>
+                    <span data-testid="fpl-header-points" className="font-bold text-[#FFD60A]">
+                      {resolveExcelManagerPoints({
+                        entryId: player.playerId,
+                        selectedPlayer: player,
+                        players,
+                      })}{' '}
+                      pts
+                    </span>
+                  </span>
+                </div>
               </div>
             </div>
 
