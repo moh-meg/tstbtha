@@ -4,7 +4,9 @@ import {
   assembleFplSquad,
   buildBootstrapMaps,
   buildLivePointsMap,
+  buildLiveStatsMap,
   buildPlayerPhotoCandidates,
+  buildTeamFixtureLookup,
   FplUpstreamError,
   getFplSquadWithCache,
   resetFplCachesForTests,
@@ -257,4 +259,77 @@ test('handler returns 400 for invalid entryId without calling upstream', async (
   assert.equal(res.statusCode, 400);
   const body = JSON.parse(res.body);
   assert.equal(body.errorCode, 'INVALID_ENTRY_ID');
+});
+
+test('assembleFplSquad marks started/played players for points and unplayed players with GW12 opponent or BGW', () => {
+  const bootstrapMaps = buildBootstrapMaps({
+    teams: [
+      { id: 1, code: 3, short_name: 'ARS', name: 'Arsenal' },
+      { id: 7, code: 8, short_name: 'CHE', name: 'Chelsea' },
+      { id: 12, code: 14, short_name: 'LIV', name: 'Liverpool' },
+      { id: 19, code: 21, short_name: 'WHU', name: 'West Ham' },
+    ],
+    elements: [
+      { id: 10, code: 154561, first_name: 'David', second_name: 'Raya', web_name: 'Raya', element_type: 1, team: 1 },
+      { id: 20, code: 244851, first_name: 'Cole', second_name: 'Palmer', web_name: 'Palmer', element_type: 3, team: 7 },
+      { id: 30, code: 118748, first_name: 'Mohamed', second_name: 'Salah', web_name: 'M.Salah', element_type: 3, team: 12 },
+      { id: 40, code: 223340, first_name: 'Jarrod', second_name: 'Bowen', web_name: 'Bowen', element_type: 3, team: 19 },
+    ],
+  });
+
+  const liveStatsMap = buildLiveStatsMap({
+    elements: [
+      { id: 10, stats: { total_points: 6, minutes: 90 } },
+      { id: 20, stats: { total_points: 0, minutes: 0 } },
+      { id: 30, stats: { total_points: 1, minutes: 12 } },
+      { id: 40, stats: { total_points: 0, minutes: 0 } },
+    ],
+  });
+
+  const nowMs = Date.parse('2026-11-28T15:00:00Z');
+  const teamFixtureLookup = buildTeamFixtureLookup(
+    [
+      // ARS home vs CHE unstarted in flag, EXCEPT Salah's minutes > 0 overrides; CHE & ARS kickoff future
+      { team_h: 7, team_a: 12, started: false, finished: false, kickoff_time: '2026-11-29T16:30:00Z' },
+      // ARS kickoff already in past -> started even if minutes=0 or flag=false
+      { team_h: 1, team_a: 2, started: true, finished: true, kickoff_time: '2026-11-28T12:30:00Z' },
+      // WHU (19) omitted -> Blank Gameweek (BGW)
+    ],
+    bootstrapMaps.teamsById,
+    nowMs,
+  );
+
+  const squad = assembleFplSquad({
+    entryId: '2249544',
+    event: 12,
+    bootstrapMaps,
+    liveStatsMap,
+    teamFixtureLookup,
+    excelEventPoints: 19,
+    picksPayload: {
+      picks: [
+        { element: 10, position: 1, multiplier: 1, is_captain: false, is_vice_captain: false },
+        { element: 20, position: 2, multiplier: 1, is_captain: false, is_vice_captain: false },
+        { element: 30, position: 3, multiplier: 2, is_captain: true, is_vice_captain: false },
+        { element: 40, position: 12, multiplier: 0, is_captain: false, is_vice_captain: false },
+      ],
+    },
+  });
+
+  assert.equal(squad.eventPoints, 19);
+  // Raya: started fixture + 90 mins -> show 6 pts
+  assert.equal(squad.startingXI[0].hasStarted, true);
+  assert.equal(squad.startingXI[0].points, 6);
+  // Palmer (CHE home vs LIV): unstarted + 0 mins -> show vs LIV
+  assert.equal(squad.startingXI[1].hasStarted, false);
+  assert.equal(squad.startingXI[1].opponentDisplay, 'vs LIV');
+  // Salah (LIV away @ CHE): minutes=12 > 0 -> started -> show 2 pts
+  assert.equal(squad.startingXI[2].hasStarted, true);
+  assert.equal(squad.startingXI[2].points, 2);
+  assert.equal(squad.startingXI[2].opponentDisplay, '@ CHE');
+  // Bowen (WHU): no fixture in GW12 -> BGW
+  assert.equal(squad.bench[0].hasStarted, false);
+  assert.equal(squad.bench[0].opponentDisplay, 'BGW');
+  // Null fixtures payload gracefully defaults to null lookup & shows points
+  assert.equal(buildTeamFixtureLookup(null, bootstrapMaps.teamsById), null);
 });

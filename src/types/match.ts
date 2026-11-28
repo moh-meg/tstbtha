@@ -58,12 +58,16 @@ export interface FplSquadPlayer {
   teamName?: string;
   teamCode?: number | null;
   team_code?: number | null;
+  teamId?: number | null;
   photoUrl: string;
   photoUrls?: string[];
   position: number;
   multiplier: number;
   isCaptain: boolean;
   isViceCaptain: boolean;
+  minutes?: number;
+  hasStarted?: boolean;
+  opponentDisplay?: string | null;
   rawPoints?: number | null;
   points: number | null;
 }

@@ -8,7 +8,10 @@ import {
   assembleFplSquadClient,
   buildFplBootstrapLookupClient,
   buildFplLivePointsMapClient,
+  buildFplLiveStatsMapClient,
   buildFplPlayerPhotoCandidates,
+  buildFplTeamShortMapClient,
+  buildTeamFixtureLookupClient,
   fetchFplSquadData,
   fetchMatchesData,
   fetchPlayersData,
@@ -572,20 +575,159 @@ test('fetchFplSquadData falls back to entry 122 preview squad for GW12 with Exce
   assert.equal(previewResult.squad.bench.length, 4);
   const captain = previewResult.squad.startingXI.find((p) => p.elementId === 411);
   const zeroStarter = previewResult.squad.startingXI.find((p) => p.elementId === 366);
+  const palmer = previewResult.squad.startingXI.find((p) => p.elementId === 15);
   const vice = previewResult.squad.startingXI.find((p) => p.elementId === 154);
+  const rogers = previewResult.squad.bench.find((p) => p.elementId === 346);
+  const watkins = previewResult.squad.bench.find((p) => p.elementId === 304);
   assert.equal(captain?.isCaptain, true);
   assert.equal(captain?.multiplier, 2);
   assert.equal(captain?.points, 12);
+  assert.equal(captain?.hasStarted, true);
   assert.equal(zeroStarter?.points, 0);
+  assert.equal(zeroStarter?.hasStarted, false);
+  assert.equal(zeroStarter?.opponentDisplay, 'vs AVL');
+  assert.equal(palmer?.hasStarted, false);
+  assert.equal(palmer?.opponentDisplay, 'vs AVL');
+  assert.equal(rogers?.hasStarted, false);
+  assert.equal(rogers?.opponentDisplay, '@ CHE');
+  assert.equal(watkins?.hasStarted, false);
+  assert.equal(watkins?.opponentDisplay, '@ CHE');
   assert.equal(vice?.isViceCaptain, true);
+  assert.equal(vice?.hasStarted, true);
   assert.deepEqual(
     previewResult.squad.bench.map((p) => p.elementId),
     [497, 31, 346, 304],
   );
-  assert.equal(previewResult.squad.pointsOnBench, 9);
+  assert.equal(previewResult.squad.pointsOnBench, 8);
   const withMissingExcel = applyExcelPointsToSquad(previewResult.squad, { players: [] });
   assert.equal(withMissingExcel.eventPoints, 0);
   assert.equal(withMissingExcel.startingXI.find((p) => p.elementId === 411)?.points, 12);
+});
+
+test('fetchFplSquadData resolves GW12 opponents for unplayed players and points for started/played players', async () => {
+  resetFplClientCachesForTests();
+
+  const rawBootstrap = {
+    teams: [
+      { id: 1, short_name: 'ARS', name: 'Arsenal' },
+      { id: 7, short_name: 'CHE', name: 'Chelsea' },
+      { id: 12, short_name: 'LIV', name: 'Liverpool' },
+      { id: 19, short_name: 'WHU', name: 'West Ham' },
+    ],
+    elements: [
+      { id: 10, code: 154561, web_name: 'Raya', element_type: 1, team: 1 },
+      { id: 20, code: 244851, web_name: 'Palmer', element_type: 3, team: 7 },
+      { id: 30, code: 118748, web_name: 'M.Salah', element_type: 3, team: 12 },
+      { id: 40, code: 223340, web_name: 'Bowen', element_type: 3, team: 19 },
+    ],
+  };
+
+  const result = await fetchFplSquadData(
+    '2249544',
+    DEFAULT_FPL_EVENT,
+    ['/api/fpl-squad'],
+    async (url) => {
+      if (url.startsWith('/api/fpl-squad')) {
+        return { ok: false, status: 404 };
+      }
+      if (url.includes('/entry/2249544/event/12/picks/')) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => 'application/json' },
+          text: async () =>
+            JSON.stringify({
+              picks: [
+                { element: 10, position: 1, multiplier: 1, is_captain: false, is_vice_captain: false },
+                { element: 20, position: 2, multiplier: 1, is_captain: false, is_vice_captain: false },
+                { element: 30, position: 3, multiplier: 1, is_captain: false, is_vice_captain: false },
+                { element: 40, position: 12, multiplier: 0, is_captain: false, is_vice_captain: false },
+              ],
+            }),
+        };
+      }
+      if (url.includes('/bootstrap-static/')) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => 'application/json' },
+          text: async () => JSON.stringify(rawBootstrap),
+        };
+      }
+      if (url.includes('/event/12/live/')) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => 'application/json' },
+          text: async () =>
+            JSON.stringify({
+              elements: [
+                { id: 10, stats: { total_points: 0, minutes: 0 } },
+                { id: 20, stats: { total_points: 0, minutes: 0 } },
+                { id: 30, stats: { total_points: 8, minutes: 90 } },
+                { id: 40, stats: { total_points: 0, minutes: 0 } },
+              ],
+            }),
+        };
+      }
+      if (url.includes('/fixtures/?event=12')) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => 'application/json' },
+          text: async () =>
+            JSON.stringify([
+              // Kickoff in past (started even with 0 minutes)
+              { team_h: 1, team_a: 12, started: false, finished: false, kickoff_time: '2020-11-22T15:00:00Z' },
+              // Future fixture, unstarted
+              { team_h: 12, team_a: 7, started: false, finished: false, kickoff_time: '2099-11-29T16:30:00Z' },
+            ]),
+        };
+      }
+      return { ok: false, status: 404 };
+    },
+    false,
+    {
+      selectedPlayer: {
+        id: 'p1',
+        teamName: 'اولاد زبانة',
+        playerName: 'DR27 (cap)',
+        playerId: '2249544',
+        playerScore: 49,
+      },
+    },
+  );
+
+  assert.equal(result.source, 'direct');
+  assert.ok(result.squad);
+  assert.equal(result.squad.eventPoints, 49);
+  // Raya (ARS): past kickoff_time -> hasStarted=true, shows 0 pts
+  assert.equal(result.squad.startingXI[0].hasStarted, true);
+  assert.equal(result.squad.startingXI[0].points, 0);
+  // Palmer (CHE away @ LIV): future kickoff_time & 0 mins -> hasStarted=false, shows '@ LIV'
+  assert.equal(result.squad.startingXI[1].hasStarted, false);
+  assert.equal(result.squad.startingXI[1].opponentDisplay, '@ LIV');
+  // Salah (LIV): minutes=90 > 0 -> hasStarted=true, shows 8 pts
+  assert.equal(result.squad.startingXI[2].hasStarted, true);
+  assert.equal(result.squad.startingXI[2].points, 8);
+  // Bowen (WHU): no GW12 fixture -> hasStarted=false, shows 'BGW'
+  assert.equal(result.squad.bench[0].hasStarted, false);
+  assert.equal(result.squad.bench[0].opponentDisplay, 'BGW');
+
+  const teamsMap = buildFplTeamShortMapClient(rawBootstrap);
+  const liveStats = buildFplLiveStatsMapClient({ elements: [{ id: 10, stats: { total_points: 6, minutes: 90 } }] });
+  assert.equal(liveStats.get(10)?.minutes, 90);
+  assert.equal(teamsMap.get(7), 'CHE');
+  const dgwLookup = buildTeamFixtureLookupClient(
+    [
+      { team_h: 1, team_a: 7, started: true, kickoff_time: '2020-01-01T00:00:00Z' },
+      { team_h: 12, team_a: 1, started: false, kickoff_time: '2099-01-01T00:00:00Z' },
+    ],
+    teamsMap,
+    Date.parse('2026-01-01T00:00:00Z'),
+  );
+  assert.equal(dgwLookup?.get(1)?.started, true);
+  assert.equal(dgwLookup?.get(1)?.opponentDisplay, 'vs CHE, @ LIV');
 });
 
 

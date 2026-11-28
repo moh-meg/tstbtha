@@ -650,6 +650,7 @@ interface BootstrapElementLookup {
   fullName: string;
   elementType: number;
   positionLabel: FplPositionLabel;
+  teamId: number | null;
   teamShortName: string;
   teamName: string;
   teamCode: number | null;
@@ -657,13 +658,27 @@ interface BootstrapElementLookup {
   photoUrls: string[];
 }
 
+export interface FplLivePlayerStats {
+  points: number;
+  minutes: number;
+}
+
+export interface FplTeamFixtureStatus {
+  started: boolean;
+  opponentDisplay: string;
+}
+
 let cachedBootstrapElements: Map<number, BootstrapElementLookup> | null = null;
-const cachedEventLivePoints = new Map<number, Map<number, number>>();
+let cachedBootstrapTeamsById: Map<number, string> | null = null;
+const cachedEventLiveStats = new Map<number, Map<number, FplLivePlayerStats>>();
+const cachedEventFixtures = new Map<number, unknown[]>();
 const cachedClientSquads = new Map<string, { squad: FplSquadData; cachedAt: number }>();
 
 export function resetFplClientCachesForTests(): void {
   cachedBootstrapElements = null;
-  cachedEventLivePoints.clear();
+  cachedBootstrapTeamsById = null;
+  cachedEventLiveStats.clear();
+  cachedEventFixtures.clear();
   cachedClientSquads.clear();
 }
 
@@ -1108,6 +1123,25 @@ export function getNextHeadshotCandidateIndex(
   return currentIndex + 1;
 }
 
+export function buildFplTeamShortMapClient(rawBootstrap: unknown): Map<number, string> {
+  const teamsById = new Map<number, string>();
+  if (!isRecord(rawBootstrap) || !Array.isArray(rawBootstrap.teams)) {
+    return teamsById;
+  }
+  for (const team of rawBootstrap.teams) {
+    if (isRecord(team) && typeof team.id === 'number') {
+      const shortLabel =
+        typeof team.short_name === 'string' && team.short_name.trim()
+          ? team.short_name.trim()
+          : typeof team.name === 'string'
+            ? team.name.trim()
+            : '';
+      teamsById.set(team.id, shortLabel);
+    }
+  }
+  return teamsById;
+}
+
 export function buildFplBootstrapLookupClient(
   rawBootstrap: unknown,
 ): Map<number, BootstrapElementLookup> {
@@ -1116,25 +1150,19 @@ export function buildFplBootstrapLookupClient(
     return elementsById;
   }
 
-  const teamsById = new Map<number, string>();
+  const teamsById = buildFplTeamShortMapClient(rawBootstrap);
   const teamNamesById = new Map<number, string>();
   const teamCodesById = new Map<number, number>();
   if (Array.isArray(rawBootstrap.teams)) {
     for (const team of rawBootstrap.teams) {
       if (isRecord(team) && typeof team.id === 'number') {
-        const shortLabel =
-          typeof team.short_name === 'string' && team.short_name.trim()
-            ? team.short_name.trim()
-            : typeof team.name === 'string'
-              ? team.name.trim()
-              : '';
+        const shortLabel = teamsById.get(team.id) ?? '';
         const fullLabel =
           typeof team.name === 'string' && team.name.trim()
             ? team.name.trim()
             : shortLabel;
         const teamCodeNum =
           typeof team.code === 'number' && Number.isFinite(team.code) ? team.code : null;
-        teamsById.set(team.id, shortLabel);
         teamNamesById.set(team.id, fullLabel);
         if (teamCodeNum !== null) {
           teamCodesById.set(team.id, teamCodeNum);
@@ -1161,13 +1189,14 @@ export function buildFplBootstrapLookupClient(
       const firstName = typeof el.first_name === 'string' ? el.first_name.trim() : '';
       const secondName = typeof el.second_name === 'string' ? el.second_name.trim() : '';
       const fullName = [firstName, secondName].filter(Boolean).join(' ') || webName;
-      const teamShortName = typeof el.team === 'number' ? teamsById.get(el.team) || '' : '';
-      const teamName = typeof el.team === 'number' ? teamNamesById.get(el.team) || teamShortName : '';
+      const teamId = typeof el.team === 'number' && Number.isFinite(el.team) ? el.team : null;
+      const teamShortName = teamId !== null ? teamsById.get(teamId) || '' : '';
+      const teamName = teamId !== null ? teamNamesById.get(teamId) || teamShortName : '';
       const teamCode =
         typeof el.team_code === 'number' && Number.isFinite(el.team_code)
           ? el.team_code
-          : typeof el.team === 'number'
-            ? teamCodesById.get(el.team) ?? null
+          : teamId !== null
+            ? teamCodesById.get(teamId) ?? null
             : null;
       const photoUrls = buildFplPlayerPhotoCandidates(rawCode, photoStr, {
         fullName,
@@ -1187,6 +1216,7 @@ export function buildFplBootstrapLookupClient(
         fullName,
         elementType,
         positionLabel: mapFplElementType(elementType),
+        teamId,
         teamShortName,
         teamName,
         teamCode,
@@ -1199,13 +1229,23 @@ export function buildFplBootstrapLookupClient(
   return elementsById;
 }
 
-export function buildFplLivePointsMapClient(rawLive: unknown): Map<number, number> {
-  const pointsById = new Map<number, number>();
+export function buildFplLiveStatsMapClient(rawLive: unknown): Map<number, FplLivePlayerStats> {
+  const statsById = new Map<number, FplLivePlayerStats>();
   if (!isRecord(rawLive) && !Array.isArray(rawLive)) {
-    return pointsById;
+    return statsById;
   }
 
   const rawElements = isRecord(rawLive) && 'elements' in rawLive ? rawLive.elements : rawLive;
+
+  const extractStats = (item: Record<string, unknown>): FplLivePlayerStats => {
+    const stats = isRecord(item.stats) ? item.stats : null;
+    const rawPoints = stats ? stats.total_points : undefined;
+    const rawMinutes = stats ? stats.minutes : undefined;
+    return {
+      points: typeof rawPoints === 'number' && Number.isFinite(rawPoints) ? rawPoints : 0,
+      minutes: typeof rawMinutes === 'number' && Number.isFinite(rawMinutes) ? rawMinutes : 0,
+    };
+  };
 
   if (Array.isArray(rawElements)) {
     for (const item of rawElements) {
@@ -1213,13 +1253,11 @@ export function buildFplLivePointsMapClient(rawLive: unknown): Map<number, numbe
         continue;
       }
       const id = Number(item.id);
-      const stats = isRecord(item.stats) ? item.stats : null;
-      const totalPoints = stats ? stats.total_points : undefined;
-      if (Number.isFinite(id) && typeof totalPoints === 'number' && Number.isFinite(totalPoints)) {
-        pointsById.set(id, totalPoints);
+      if (Number.isFinite(id)) {
+        statsById.set(id, extractStats(item));
       }
     }
-    return pointsById;
+    return statsById;
   }
 
   if (isRecord(rawElements)) {
@@ -1228,15 +1266,93 @@ export function buildFplLivePointsMapClient(rawLive: unknown): Map<number, numbe
         continue;
       }
       const id = Number(item.id ?? key);
-      const stats = isRecord(item.stats) ? item.stats : null;
-      const totalPoints = stats ? stats.total_points : undefined;
-      if (Number.isFinite(id) && typeof totalPoints === 'number' && Number.isFinite(totalPoints)) {
-        pointsById.set(id, totalPoints);
+      if (Number.isFinite(id)) {
+        statsById.set(id, extractStats(item));
       }
     }
   }
 
+  return statsById;
+}
+
+export function buildFplLivePointsMapClient(rawLive: unknown): Map<number, number> {
+  const pointsById = new Map<number, number>();
+  for (const [id, stat] of buildFplLiveStatsMapClient(rawLive).entries()) {
+    pointsById.set(id, stat.points);
+  }
   return pointsById;
+}
+
+export function hasFplFixtureStarted(fixture: unknown, nowMs: number = Date.now()): boolean {
+  if (!isRecord(fixture)) {
+    return false;
+  }
+  if (
+    fixture.started === true ||
+    fixture.finished === true ||
+    fixture.finished_provisional === true
+  ) {
+    return true;
+  }
+  if (typeof fixture.kickoff_time === 'string' && fixture.kickoff_time.trim() !== '') {
+    const kickoffMs = Date.parse(fixture.kickoff_time);
+    if (Number.isFinite(kickoffMs) && kickoffMs <= nowMs) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function buildTeamFixtureLookupClient(
+  rawFixtures: unknown,
+  teamsById: ReadonlyMap<number, string> | null | undefined,
+  nowMs: number = Date.now(),
+): Map<number, FplTeamFixtureStatus> | null {
+  if (!Array.isArray(rawFixtures)) {
+    return null;
+  }
+
+  const byTeam = new Map<number, { started: boolean; labels: string[] }>();
+  const pushTeamEntry = (teamId: number, started: boolean, label: string) => {
+    if (!Number.isFinite(teamId)) {
+      return;
+    }
+    const existing = byTeam.get(teamId);
+    if (!existing) {
+      byTeam.set(teamId, { started, labels: [label] });
+      return;
+    }
+    existing.started = existing.started || started;
+    if (label && !existing.labels.includes(label)) {
+      existing.labels.push(label);
+    }
+  };
+
+  for (const fixture of rawFixtures) {
+    if (!isRecord(fixture)) {
+      continue;
+    }
+    const teamH = Number(fixture.team_h);
+    const teamA = Number(fixture.team_a);
+    if (!Number.isFinite(teamH) || !Number.isFinite(teamA)) {
+      continue;
+    }
+    const started = hasFplFixtureStarted(fixture, nowMs);
+    const homeShort = (teamsById ? teamsById.get(teamH) : '') || `#${teamH}`;
+    const awayShort = (teamsById ? teamsById.get(teamA) : '') || `#${teamA}`;
+
+    pushTeamEntry(teamH, started, `vs ${awayShort}`);
+    pushTeamEntry(teamA, started, `@ ${homeShort}`);
+  }
+
+  const result = new Map<number, FplTeamFixtureStatus>();
+  for (const [teamId, entry] of byTeam.entries()) {
+    result.set(teamId, {
+      started: entry.started,
+      opponentDisplay: entry.labels.join(', '),
+    });
+  }
+  return result;
 }
 
 export interface ExcelPointsContext {
@@ -1315,8 +1431,9 @@ export function assembleFplSquadClient(
   event: number = DEFAULT_FPL_EVENT,
   picksPayload: unknown,
   bootstrapLookup: Map<number, BootstrapElementLookup>,
-  livePointsMap?: ReadonlyMap<number, number> | null,
+  liveStatsOrPointsMap?: ReadonlyMap<number, number | FplLivePlayerStats> | null,
   excelEventPoints?: number | null,
+  teamFixtureLookup?: ReadonlyMap<number, FplTeamFixtureStatus> | null,
 ): FplSquadData | null {
   if (!isRecord(picksPayload) || !Array.isArray(picksPayload.picks)) {
     return null;
@@ -1338,14 +1455,27 @@ export function assembleFplSquadClient(
           ? pick.element_type
           : 3);
 
+      const rawLiveEntry =
+        liveStatsOrPointsMap && liveStatsOrPointsMap.has(elementId)
+          ? liveStatsOrPointsMap.get(elementId)
+          : undefined;
       const rawPoints =
-        livePointsMap && livePointsMap.has(elementId) ? livePointsMap.get(elementId) ?? 0 : 0;
+        typeof rawLiveEntry === 'number'
+          ? rawLiveEntry
+          : rawLiveEntry && typeof rawLiveEntry.points === 'number'
+            ? rawLiveEntry.points
+            : 0;
+      const minutes =
+        rawLiveEntry && typeof rawLiveEntry !== 'number' && typeof rawLiveEntry.minutes === 'number'
+          ? rawLiveEntry.minutes
+          : 0;
       const isStarter = Number.isFinite(position) && position >= 1 && position <= 11;
       const points = isStarter ? rawPoints * multiplier : rawPoints;
       const webName = meta?.webName ?? (Number.isFinite(elementId) ? `Player #${elementId}` : 'Player');
       const firstName = meta?.firstName ?? '';
       const secondName = meta?.secondName ?? '';
       const fullName = meta?.fullName ?? webName;
+      const teamId = typeof meta?.teamId === 'number' ? meta.teamId : null;
       const teamShortName = meta?.teamShortName ?? '';
       const teamName = meta?.teamName ?? teamShortName;
       const teamCode = meta?.teamCode ?? null;
@@ -1355,6 +1485,19 @@ export function assembleFplSquadClient(
           : meta?.photoUrl
             ? [meta.photoUrl]
             : [];
+
+      let hasStarted = true;
+      let opponentDisplay: string | null = null;
+      if (teamFixtureLookup instanceof Map) {
+        const fixtureInfo = teamId !== null ? teamFixtureLookup.get(teamId) : null;
+        if (fixtureInfo) {
+          hasStarted = minutes > 0 || Boolean(fixtureInfo.started);
+          opponentDisplay = fixtureInfo.opponentDisplay || null;
+        } else {
+          hasStarted = minutes > 0;
+          opponentDisplay = 'BGW';
+        }
+      }
 
       return {
         elementId: Number.isFinite(elementId) ? elementId : 0,
@@ -1368,6 +1511,7 @@ export function assembleFplSquadClient(
         fullName,
         elementType,
         positionLabel: meta?.positionLabel ?? mapFplElementType(elementType),
+        teamId,
         teamShortName,
         teamName,
         teamCode,
@@ -1378,6 +1522,9 @@ export function assembleFplSquadClient(
         multiplier,
         isCaptain: Boolean(pick.is_captain),
         isViceCaptain: Boolean(pick.is_vice_captain),
+        minutes,
+        hasStarted,
+        opponentDisplay,
         rawPoints,
         points,
       };
@@ -1507,6 +1654,13 @@ function normalizeSquadPlayerFromApi(raw: unknown): FplSquadPlayer | null {
   const rawPoints =
     typeof raw.rawPoints === 'number' && Number.isFinite(raw.rawPoints) ? raw.rawPoints : null;
   const points = typeof raw.points === 'number' && Number.isFinite(raw.points) ? raw.points : 0;
+  const teamId = typeof raw.teamId === 'number' && Number.isFinite(raw.teamId) ? raw.teamId : null;
+  const minutes = typeof raw.minutes === 'number' && Number.isFinite(raw.minutes) ? raw.minutes : 0;
+  const hasStarted = typeof raw.hasStarted === 'boolean' ? raw.hasStarted : true;
+  const opponentDisplay =
+    typeof raw.opponentDisplay === 'string' && raw.opponentDisplay.trim()
+      ? raw.opponentDisplay.trim()
+      : null;
 
   return {
     elementId,
@@ -1520,6 +1674,7 @@ function normalizeSquadPlayerFromApi(raw: unknown): FplSquadPlayer | null {
     fullName,
     elementType,
     positionLabel: posLabel,
+    teamId,
     teamShortName,
     teamName,
     teamCode,
@@ -1531,6 +1686,9 @@ function normalizeSquadPlayerFromApi(raw: unknown): FplSquadPlayer | null {
       typeof raw.multiplier === 'number' && Number.isFinite(raw.multiplier) ? raw.multiplier : 1,
     isCaptain: Boolean(raw.isCaptain),
     isViceCaptain: Boolean(raw.isViceCaptain),
+    minutes,
+    hasStarted,
+    opponentDisplay,
     rawPoints: rawPoints ?? points,
     points,
   };
@@ -1588,7 +1746,7 @@ export function normalizeFplSquadResponse(raw: unknown): FplSquadData | null {
   };
 }
 
-const PREVIEW_SAMPLE_BOOTSTRAP = buildFplBootstrapLookupClient({
+const PREVIEW_SAMPLE_BOOTSTRAP_PAYLOAD = {
   teams: [
     { id: 1, short_name: 'ARS', name: 'Arsenal' },
     { id: 2, short_name: 'AVL', name: 'Aston Villa' },
@@ -1599,6 +1757,7 @@ const PREVIEW_SAMPLE_BOOTSTRAP = buildFplBootstrapLookupClient({
     { id: 13, short_name: 'MCI', name: 'Man City' },
     { id: 14, short_name: 'MUN', name: 'Man Utd' },
     { id: 15, short_name: 'NEW', name: 'Newcastle' },
+    { id: 20, short_name: 'WOL', name: 'Wolves' },
   ],
   elements: [
     { id: 1, code: 154561, photo: '154561.jpg', first_name: 'David', second_name: 'Raya', web_name: 'Raya', element_type: 1, team: 1 },
@@ -1617,25 +1776,40 @@ const PREVIEW_SAMPLE_BOOTSTRAP = buildFplBootstrapLookupClient({
     { id: 346, code: 244850, photo: '244850.jpg', first_name: 'Morgan', second_name: 'Rogers', web_name: 'Rogers', element_type: 3, team: 2 },
     { id: 304, code: 178301, photo: '178301.jpg', first_name: 'Ollie', second_name: 'Watkins', web_name: 'Watkins', element_type: 4, team: 2 },
   ],
-});
+};
 
-const PREVIEW_SAMPLE_LIVE_POINTS = new Map<number, number>([
-  [1, 6],
-  [504, 6],
-  [112, 6],
-  [115, 1],
-  [366, 0],
-  [40, 17],
-  [154, 2],
-  [15, 2],
-  [124, 5],
-  [249, 11],
-  [411, 6],
-  [497, 2],
-  [31, 6],
-  [346, 1],
-  [304, 0],
+const PREVIEW_SAMPLE_BOOTSTRAP = buildFplBootstrapLookupClient(PREVIEW_SAMPLE_BOOTSTRAP_PAYLOAD);
+const PREVIEW_SAMPLE_TEAMS = buildFplTeamShortMapClient(PREVIEW_SAMPLE_BOOTSTRAP_PAYLOAD);
+
+const PREVIEW_SAMPLE_LIVE_STATS = new Map<number, FplLivePlayerStats>([
+  [1, { points: 6, minutes: 90 }],
+  [504, { points: 6, minutes: 90 }],
+  [112, { points: 6, minutes: 90 }],
+  [115, { points: 1, minutes: 90 }],
+  [366, { points: 0, minutes: 0 }],
+  [40, { points: 17, minutes: 90 }],
+  [154, { points: 2, minutes: 84 }],
+  [15, { points: 0, minutes: 0 }],
+  [124, { points: 5, minutes: 90 }],
+  [249, { points: 11, minutes: 78 }],
+  [411, { points: 6, minutes: 90 }],
+  [497, { points: 2, minutes: 90 }],
+  [31, { points: 6, minutes: 90 }],
+  [346, { points: 0, minutes: 0 }],
+  [304, { points: 0, minutes: 0 }],
 ]);
+
+const PREVIEW_SAMPLE_FIXTURE_LOOKUP = buildTeamFixtureLookupClient(
+  [
+    { team_h: 1, team_a: 8, started: true, finished: true, kickoff_time: '2025-11-22T15:00:00Z' },
+    { team_h: 13, team_a: 15, started: true, finished: true, kickoff_time: '2025-11-22T17:30:00Z' },
+    { team_h: 14, team_a: 5, started: true, finished: true, kickoff_time: '2025-11-22T15:00:00Z' },
+    { team_h: 10, team_a: 20, started: true, finished: true, kickoff_time: '2025-11-22T15:00:00Z' },
+    { team_h: 7, team_a: 2, started: false, finished: false, kickoff_time: '2099-11-29T16:30:00Z' },
+  ],
+  PREVIEW_SAMPLE_TEAMS,
+  Date.parse('2026-01-01T00:00:00Z'),
+);
 
 const PREVIEW_SAMPLE_ENTRY_122_PICKS = {
   active_chip: null,
@@ -1645,7 +1819,7 @@ const PREVIEW_SAMPLE_ENTRY_122_PICKS = {
     points: 0,
     total_points: 712,
     rank: 145820,
-    points_on_bench: 9,
+    points_on_bench: 8,
   },
   picks: [
     { element: 1, position: 1, multiplier: 1, is_captain: false, is_vice_captain: false, element_type: 1 },
@@ -1681,8 +1855,9 @@ export function buildPreviewFallbackSquad(
     event,
     PREVIEW_SAMPLE_ENTRY_122_PICKS,
     PREVIEW_SAMPLE_BOOTSTRAP,
-    PREVIEW_SAMPLE_LIVE_POINTS,
+    PREVIEW_SAMPLE_LIVE_STATS,
     managerPoints,
+    PREVIEW_SAMPLE_FIXTURE_LOOKUP,
   );
   if (!assembled) {
     throw new Error('Failed to build entry 122 preview fallback squad');
@@ -1825,45 +2000,86 @@ export async function fetchFplSquadData(
         picksPayload = await picksResp.json();
       }
 
-      const bootstrapPromise = cachedBootstrapElements
-        ? Promise.resolve(cachedBootstrapElements)
-        : fetcher(`${FPL_API_BASE}/bootstrap-static/`, {
-            headers: { Accept: 'application/json' },
-          })
-            .then(async (bsResp) => {
-              if (!bsResp.ok) return new Map<number, BootstrapElementLookup>();
-              const bsPayload =
-                typeof bsResp.text === 'function'
-                  ? JSON.parse(await bsResp.text())
-                  : typeof bsResp.json === 'function'
-                    ? await bsResp.json()
-                    : null;
-              const lookup = buildFplBootstrapLookupClient(bsPayload);
-              cachedBootstrapElements = lookup;
-              return lookup;
+      const bootstrapPromise: Promise<{
+        lookup: Map<number, BootstrapElementLookup>;
+        teamsById: Map<number, string>;
+      }> =
+        cachedBootstrapElements && cachedBootstrapTeamsById
+          ? Promise.resolve({
+              lookup: cachedBootstrapElements,
+              teamsById: cachedBootstrapTeamsById,
             })
-            .catch(() => new Map<number, BootstrapElementLookup>());
+          : fetcher(`${FPL_API_BASE}/bootstrap-static/`, {
+              headers: { Accept: 'application/json' },
+            })
+              .then(async (bsResp) => {
+                if (!bsResp.ok) {
+                  return {
+                    lookup: new Map<number, BootstrapElementLookup>(),
+                    teamsById: new Map<number, string>(),
+                  };
+                }
+                const bsPayload =
+                  typeof bsResp.text === 'function'
+                    ? JSON.parse(await bsResp.text())
+                    : typeof bsResp.json === 'function'
+                      ? await bsResp.json()
+                      : null;
+                const lookup = buildFplBootstrapLookupClient(bsPayload);
+                const teamsById = buildFplTeamShortMapClient(bsPayload);
+                cachedBootstrapElements = lookup;
+                cachedBootstrapTeamsById = teamsById;
+                return { lookup, teamsById };
+              })
+              .catch(() => ({
+                lookup: new Map<number, BootstrapElementLookup>(),
+                teamsById: new Map<number, string>(),
+              }));
 
-      const livePromise = cachedEventLivePoints.has(event)
-        ? Promise.resolve(cachedEventLivePoints.get(event) ?? new Map<number, number>())
+      const livePromise = cachedEventLiveStats.has(event)
+        ? Promise.resolve(cachedEventLiveStats.get(event) ?? new Map<number, FplLivePlayerStats>())
         : fetcher(`${FPL_API_BASE}/event/${event}/live/`, {
             headers: { Accept: 'application/json' },
           })
             .then(async (liveResp) => {
-              if (!liveResp.ok) return new Map<number, number>();
+              if (!liveResp.ok) return new Map<number, FplLivePlayerStats>();
               const livePayload =
                 typeof liveResp.text === 'function'
                   ? JSON.parse(await liveResp.text())
                   : typeof liveResp.json === 'function'
                     ? await liveResp.json()
                     : null;
-              const pointsMap = buildFplLivePointsMapClient(livePayload);
-              cachedEventLivePoints.set(event, pointsMap);
-              return pointsMap;
+              const statsMap = buildFplLiveStatsMapClient(livePayload);
+              cachedEventLiveStats.set(event, statsMap);
+              return statsMap;
             })
-            .catch(() => new Map<number, number>());
+            .catch(() => new Map<number, FplLivePlayerStats>());
 
-      const [bootstrapLookup, livePointsMap] = await Promise.all([bootstrapPromise, livePromise]);
+      const fixturesPromise: Promise<unknown[] | null> = cachedEventFixtures.has(event)
+        ? Promise.resolve(cachedEventFixtures.get(event) ?? null)
+        : fetcher(`${FPL_API_BASE}/fixtures/?event=${event}`, {
+            headers: { Accept: 'application/json' },
+          })
+            .then(async (fixResp) => {
+              if (!fixResp.ok) return null;
+              const fixPayload =
+                typeof fixResp.text === 'function'
+                  ? JSON.parse(await fixResp.text())
+                  : typeof fixResp.json === 'function'
+                    ? await fixResp.json()
+                    : null;
+              if (Array.isArray(fixPayload)) {
+                cachedEventFixtures.set(event, fixPayload);
+                return fixPayload;
+              }
+              return null;
+            })
+            .catch(() => null);
+
+      const [{ lookup: bootstrapLookup, teamsById }, liveStatsMap, rawFixtures] =
+        await Promise.all([bootstrapPromise, livePromise, fixturesPromise]);
+
+      const teamFixtureLookup = buildTeamFixtureLookupClient(rawFixtures, teamsById);
 
       const managerExcelPoints = resolveExcelManagerPoints({
         entryId,
@@ -1876,8 +2092,9 @@ export async function fetchFplSquadData(
         event,
         picksPayload,
         bootstrapLookup,
-        livePointsMap,
+        liveStatsMap,
         managerExcelPoints,
+        teamFixtureLookup,
       );
       if (squad && (squad.startingXI.length > 0 || squad.bench.length > 0)) {
         cachedClientSquads.set(cacheKey, { squad, cachedAt: Date.now() });

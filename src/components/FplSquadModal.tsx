@@ -189,8 +189,14 @@ function PitchPlayerTile({
   variant?: 'pitch' | 'bench';
 }) {
   const isBench = variant === 'bench';
+  const hasStarted = player.hasStarted !== false;
   const displayPoints =
     typeof player.points === 'number' && Number.isFinite(player.points) ? player.points : 0;
+  const opponentLabel =
+    typeof player.opponentDisplay === 'string' && player.opponentDisplay.trim()
+      ? player.opponentDisplay.trim()
+      : 'BGW';
+  const subLabel = hasStarted ? `${displayPoints} pts` : opponentLabel;
 
   return (
     <div
@@ -244,9 +250,12 @@ function PitchPlayerTile({
         <p
           dir="ltr"
           data-testid="fpl-player-points"
-          className="mt-0.5 truncate text-[10px] font-extrabold tracking-wide text-[#FFD60A] tabular-nums"
+          data-started={hasStarted ? 'true' : 'false'}
+          className={`mt-0.5 truncate text-[10px] font-extrabold tracking-wide tabular-nums ${
+            hasStarted ? 'text-[#FFD60A]' : 'text-[#7DD3FC]'
+          }`}
         >
-          {displayPoints} pts
+          {subLabel}
         </p>
       </div>
     </div>

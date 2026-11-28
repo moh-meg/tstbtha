@@ -292,13 +292,15 @@ export function buildBootstrapMaps(bootstrapPayload) {
     const firstName = typeof el.first_name === 'string' ? el.first_name.trim() : '';
     const secondName = typeof el.second_name === 'string' ? el.second_name.trim() : '';
     const fullName = [firstName, secondName].filter(Boolean).join(' ') || webName;
-    const teamShortName = typeof el.team === 'number' ? teamsById.get(el.team) || '' : '';
-    const teamName = typeof el.team === 'number' ? teamNamesById.get(el.team) || teamShortName : '';
+    const teamId =
+      typeof el.team === 'number' && Number.isFinite(el.team) ? el.team : null;
+    const teamShortName = teamId !== null ? teamsById.get(teamId) || '' : '';
+    const teamName = teamId !== null ? teamNamesById.get(teamId) || teamShortName : '';
     const teamCode =
       typeof el.team_code === 'number' && Number.isFinite(el.team_code)
         ? el.team_code
-        : typeof el.team === 'number'
-          ? teamCodesById.get(el.team) ?? null
+        : teamId !== null
+          ? teamCodesById.get(teamId) ?? null
           : null;
     const photoUrls = buildPlayerPhotoCandidates(el.code, rawPhoto, {
       fullName,
@@ -317,6 +319,7 @@ export function buildBootstrapMaps(bootstrapPayload) {
       fullName,
       elementType: typeof el.element_type === 'number' ? el.element_type : 3,
       positionLabel: mapElementTypeToPosition(el.element_type),
+      teamId,
       teamShortName,
       teamName,
       teamCode,
@@ -328,9 +331,17 @@ export function buildBootstrapMaps(bootstrapPayload) {
   return { elementsById, teamsById, teamNamesById, teamCodesById };
 }
 
-export function buildLivePointsMap(livePayload) {
-  const pointsById = new Map();
+export function buildLiveStatsMap(livePayload) {
+  const statsById = new Map();
   const rawElements = livePayload?.elements ?? livePayload;
+
+  const extractStats = (item) => {
+    const rawPoints = item.stats?.total_points;
+    const rawMinutes = item.stats?.minutes;
+    const points = typeof rawPoints === 'number' && Number.isFinite(rawPoints) ? rawPoints : 0;
+    const minutes = typeof rawMinutes === 'number' && Number.isFinite(rawMinutes) ? rawMinutes : 0;
+    return { points, minutes };
+  };
 
   if (Array.isArray(rawElements)) {
     for (const item of rawElements) {
@@ -338,12 +349,11 @@ export function buildLivePointsMap(livePayload) {
         continue;
       }
       const id = Number(item.id);
-      const totalPoints = item.stats?.total_points;
-      if (Number.isFinite(id) && typeof totalPoints === 'number' && Number.isFinite(totalPoints)) {
-        pointsById.set(id, totalPoints);
+      if (Number.isFinite(id)) {
+        statsById.set(id, extractStats(item));
       }
     }
-    return pointsById;
+    return statsById;
   }
 
   if (rawElements && typeof rawElements === 'object') {
@@ -352,14 +362,100 @@ export function buildLivePointsMap(livePayload) {
         continue;
       }
       const id = Number(item.id ?? key);
-      const totalPoints = item.stats?.total_points;
-      if (Number.isFinite(id) && typeof totalPoints === 'number' && Number.isFinite(totalPoints)) {
-        pointsById.set(id, totalPoints);
+      if (Number.isFinite(id)) {
+        statsById.set(id, extractStats(item));
       }
     }
   }
 
+  return statsById;
+}
+
+export function buildLivePointsMap(livePayload) {
+  const pointsById = new Map();
+  for (const [id, stats] of buildLiveStatsMap(livePayload).entries()) {
+    pointsById.set(id, stats.points);
+  }
   return pointsById;
+}
+
+export function hasFixtureStarted(fixture, nowMs = Date.now()) {
+  if (!fixture || typeof fixture !== 'object') {
+    return false;
+  }
+  if (
+    fixture.started === true ||
+    fixture.finished === true ||
+    fixture.finished_provisional === true
+  ) {
+    return true;
+  }
+  if (typeof fixture.kickoff_time === 'string' && fixture.kickoff_time.trim() !== '') {
+    const kickoffMs = Date.parse(fixture.kickoff_time);
+    if (Number.isFinite(kickoffMs) && kickoffMs <= nowMs) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Builds a map of FPL `teamId -> { started, opponentDisplay }` for a gameweek's fixtures.
+ * Returns `null` when fixture payload is unavailable so callers can gracefully default to points.
+ *
+ * @param {any} fixturesPayload
+ * @param {Map<number, string> | null | undefined} teamsById
+ * @param {number} [nowMs]
+ * @returns {Map<number, { started: boolean, opponentDisplay: string }> | null}
+ */
+export function buildTeamFixtureLookup(fixturesPayload, teamsById, nowMs = Date.now()) {
+  if (!Array.isArray(fixturesPayload)) {
+    return null;
+  }
+
+  const byTeam = new Map();
+  const pushTeamEntry = (teamId, started, label) => {
+    if (!Number.isFinite(teamId)) {
+      return;
+    }
+    const existing = byTeam.get(teamId);
+    if (!existing) {
+      byTeam.set(teamId, { started, labels: [label] });
+      return;
+    }
+    existing.started = existing.started || started;
+    if (label && !existing.labels.includes(label)) {
+      existing.labels.push(label);
+    }
+  };
+
+  for (const fixture of fixturesPayload) {
+    if (!fixture || typeof fixture !== 'object') {
+      continue;
+    }
+    const teamH = Number(fixture.team_h);
+    const teamA = Number(fixture.team_a);
+    if (!Number.isFinite(teamH) || !Number.isFinite(teamA)) {
+      continue;
+    }
+    const started = hasFixtureStarted(fixture, nowMs);
+    const homeShort =
+      (teamsById instanceof Map ? teamsById.get(teamH) : '') || `#${teamH}`;
+    const awayShort =
+      (teamsById instanceof Map ? teamsById.get(teamA) : '') || `#${teamA}`;
+
+    pushTeamEntry(teamH, started, `vs ${awayShort}`);
+    pushTeamEntry(teamA, started, `@ ${homeShort}`);
+  }
+
+  const result = new Map();
+  for (const [teamId, entry] of byTeam.entries()) {
+    result.set(teamId, {
+      started: entry.started,
+      opponentDisplay: entry.labels.join(', '),
+    });
+  }
+  return result;
 }
 
 /**
@@ -369,6 +465,8 @@ export function buildLivePointsMap(livePayload) {
  *   picksPayload: any,
  *   bootstrapMaps: any,
  *   livePointsMap?: Map<number, number> | null,
+ *   liveStatsMap?: Map<number, { points: number, minutes: number }> | null,
+ *   teamFixtureLookup?: Map<number, { started: boolean, opponentDisplay: string }> | null,
  *   excelEventPoints?: number | null,
  * }} params
  */
@@ -378,6 +476,8 @@ export function assembleFplSquad({
   picksPayload,
   bootstrapMaps,
   livePointsMap = null,
+  liveStatsMap = null,
+  teamFixtureLookup = null,
   excelEventPoints = null,
 }) {
   const rawPicks = Array.isArray(picksPayload?.picks) ? picksPayload.picks : [];
@@ -397,16 +497,23 @@ export function assembleFplSquad({
           ? pick.element_type
           : 3);
 
-      const rawPoints =
-        livePointsMap instanceof Map && livePointsMap.has(elementId)
+      const liveStat =
+        liveStatsMap instanceof Map && liveStatsMap.has(elementId)
+          ? liveStatsMap.get(elementId)
+          : null;
+      const rawPoints = liveStat
+        ? liveStat.points
+        : livePointsMap instanceof Map && livePointsMap.has(elementId)
           ? livePointsMap.get(elementId) ?? 0
           : 0;
+      const minutes = liveStat ? liveStat.minutes : 0;
       const isStarter = Number.isFinite(position) && position >= 1 && position <= 11;
       const points = isStarter ? rawPoints * multiplier : rawPoints;
       const webName = element?.webName ?? (Number.isFinite(elementId) ? `Player #${elementId}` : 'Player');
       const firstName = element?.firstName ?? '';
       const secondName = element?.secondName ?? '';
       const fullName = element?.fullName ?? webName;
+      const teamId = typeof element?.teamId === 'number' ? element.teamId : null;
       const teamShortName = element?.teamShortName ?? '';
       const teamName = element?.teamName ?? teamShortName;
       const teamCode = element?.teamCode ?? null;
@@ -415,6 +522,19 @@ export function assembleFplSquad({
         : element?.photoUrl
           ? [element.photoUrl]
           : [];
+
+      let hasStarted = true;
+      let opponentDisplay = null;
+      if (teamFixtureLookup instanceof Map) {
+        const fixtureInfo = teamId !== null ? teamFixtureLookup.get(teamId) : null;
+        if (fixtureInfo) {
+          hasStarted = minutes > 0 || Boolean(fixtureInfo.started);
+          opponentDisplay = fixtureInfo.opponentDisplay || null;
+        } else {
+          hasStarted = minutes > 0;
+          opponentDisplay = 'BGW';
+        }
+      }
 
       return {
         elementId: Number.isFinite(elementId) ? elementId : 0,
@@ -428,6 +548,7 @@ export function assembleFplSquad({
         fullName,
         elementType,
         positionLabel: element?.positionLabel ?? mapElementTypeToPosition(elementType),
+        teamId,
         teamShortName,
         teamName,
         teamCode,
@@ -438,6 +559,9 @@ export function assembleFplSquad({
         multiplier,
         isCaptain: Boolean(pick?.is_captain),
         isViceCaptain: Boolean(pick?.is_vice_captain),
+        minutes,
+        hasStarted,
+        opponentDisplay,
         rawPoints,
         points,
       };
@@ -494,11 +618,15 @@ export class FplUpstreamError extends Error {
 
 const bootstrapCache = createTimedCache(FPL_BOOTSTRAP_CACHE_TTL_MS);
 const liveCaches = new Map();
+const liveStatsCaches = new Map();
+const fixtureCaches = new Map();
 const squadCaches = new Map();
 
 export function resetFplCachesForTests() {
   bootstrapCache.reset();
   liveCaches.clear();
+  liveStatsCaches.clear();
+  fixtureCaches.clear();
   squadCaches.clear();
 }
 
@@ -526,6 +654,46 @@ export async function fetchBootstrapMapsWithCache(
   return payload;
 }
 
+export async function fetchEventLiveStatsWithCache(
+  event = DEFAULT_FPL_EVENT,
+  nowMs = Date.now(),
+  fetcher = fetch,
+) {
+  const validEvent = validateEventId(event);
+  if (!validEvent) {
+    return new Map();
+  }
+
+  let eventCache = liveStatsCaches.get(validEvent);
+  if (!eventCache) {
+    eventCache = createTimedCache(FPL_SQUAD_CACHE_TTL_MS);
+    liveStatsCaches.set(validEvent, eventCache);
+  }
+
+  try {
+    const { payload } = await eventCache.get(nowMs, async () => {
+      const response = await fetcher(`${FPL_API_ORIGIN}/api/event/${validEvent}/live/`, {
+        headers: FPL_REQUEST_HEADERS,
+      });
+
+      if (!response.ok) {
+        throw new FplUpstreamError(
+          502,
+          'UPSTREAM_UNAVAILABLE',
+          `FPL event live returned HTTP ${response.status}`,
+        );
+      }
+
+      const json = await response.json();
+      return buildLiveStatsMap(json);
+    });
+
+    return payload;
+  } catch {
+    return new Map();
+  }
+}
+
 export async function fetchEventLivePointsWithCache(
   event = DEFAULT_FPL_EVENT,
   nowMs = Date.now(),
@@ -544,7 +712,39 @@ export async function fetchEventLivePointsWithCache(
 
   try {
     const { payload } = await eventCache.get(nowMs, async () => {
-      const response = await fetcher(`${FPL_API_ORIGIN}/api/event/${validEvent}/live/`, {
+      const statsMap = await fetchEventLiveStatsWithCache(validEvent, nowMs, fetcher);
+      const pointsMap = new Map();
+      for (const [id, stat] of statsMap.entries()) {
+        pointsMap.set(id, stat.points);
+      }
+      return pointsMap;
+    });
+
+    return payload;
+  } catch {
+    return new Map();
+  }
+}
+
+export async function fetchEventFixturesWithCache(
+  event = DEFAULT_FPL_EVENT,
+  nowMs = Date.now(),
+  fetcher = fetch,
+) {
+  const validEvent = validateEventId(event);
+  if (!validEvent) {
+    return null;
+  }
+
+  let eventCache = fixtureCaches.get(validEvent);
+  if (!eventCache) {
+    eventCache = createTimedCache(FPL_SQUAD_CACHE_TTL_MS);
+    fixtureCaches.set(validEvent, eventCache);
+  }
+
+  try {
+    const { payload } = await eventCache.get(nowMs, async () => {
+      const response = await fetcher(`${FPL_API_ORIGIN}/api/fixtures/?event=${validEvent}`, {
         headers: FPL_REQUEST_HEADERS,
       });
 
@@ -552,17 +752,16 @@ export async function fetchEventLivePointsWithCache(
         throw new FplUpstreamError(
           502,
           'UPSTREAM_UNAVAILABLE',
-          `FPL event live returned HTTP ${response.status}`,
+          `FPL fixtures returned HTTP ${response.status}`,
         );
       }
 
-      const json = await response.json();
-      return buildLivePointsMap(json);
+      return response.json();
     });
 
-    return payload;
+    return Array.isArray(payload) ? payload : null;
   } catch {
-    return new Map();
+    return null;
   }
 }
 
@@ -578,11 +777,13 @@ export async function fetchFplSquadFromApi(entryId, event = DEFAULT_FPL_EVENT, f
   }
 
   const picksUrl = `${FPL_API_ORIGIN}/api/entry/${encodeURIComponent(validEntryId)}/event/${validEvent}/picks/`;
+  const nowMs = Date.now();
 
-  const [picksResponse, bootstrapMaps, livePointsMap] = await Promise.all([
+  const [picksResponse, bootstrapMaps, liveStatsMap, fixturesPayload] = await Promise.all([
     fetcher(picksUrl, { headers: FPL_REQUEST_HEADERS }),
-    fetchBootstrapMapsWithCache(Date.now(), fetcher),
-    fetchEventLivePointsWithCache(validEvent, Date.now(), fetcher),
+    fetchBootstrapMapsWithCache(nowMs, fetcher),
+    fetchEventLiveStatsWithCache(validEvent, nowMs, fetcher),
+    fetchEventFixturesWithCache(validEvent, nowMs, fetcher),
   ]);
 
   if (picksResponse.status === 404) {
@@ -602,12 +803,18 @@ export async function fetchFplSquadFromApi(entryId, event = DEFAULT_FPL_EVENT, f
   }
 
   const picksPayload = await picksResponse.json();
+  const teamFixtureLookup = buildTeamFixtureLookup(
+    fixturesPayload,
+    bootstrapMaps?.teamsById,
+    nowMs,
+  );
   const squad = assembleFplSquad({
     entryId: validEntryId,
     event: validEvent,
     picksPayload,
     bootstrapMaps,
-    livePointsMap,
+    liveStatsMap,
+    teamFixtureLookup,
   });
 
   if (squad.startingXI.length === 0 && squad.bench.length === 0) {
